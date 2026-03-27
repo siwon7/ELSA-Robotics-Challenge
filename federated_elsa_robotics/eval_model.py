@@ -1,435 +1,333 @@
-import ray
-import torch
+import argparse
+import copy
+import glob
+import json
 import os
+import time
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
-from federated_elsa_robotics.task import validate_one_epoch
-from elsa_learning_agent.agent import Agent
+
+from elsa_learning_agent.agent_forward_kinematics import Agent
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
-from elsa_learning_agent.utils import get_image_transform
-from elsa_learning_agent.utils import load_environment, process_obs, denormalize_action, get_image_transform
-
-import pickle
-import argparse
-import time
-import numpy as np
-import json
-
-# Define how many parallel jobs to run per GPU
-NUM_GPUS = torch.cuda.device_count()
-JOBS_PER_GPU = 10  # Adjust based on GPU memory availability
-
-
-def online_evaluation(agent, device, transform, base_cfg, idx_environment, num_episodes=5):
-    agent.eval()
-
-        # Load the configuration
-    collection_cfg_path: str = (
-        os.path.join(base_cfg.dataset.root_dir, base_cfg.env.task_name, base_cfg.env.task_name) + "_fed.json"
-    )
-    with open(collection_cfg_path, "r") as fh:
-        collection_cfg = json.load(fh)
-
-    task_env, rlbench_env = load_environment(base_cfg, collection_cfg, idx_environment, headless=True)
-
-    rewards = []
-    best_reward = -float("inf")
-
-    # save all the images to then create a video
-    best_images = []
-    for i in range(num_episodes):
-        front_images = []
-        total_reward = 0.0
-        descriptions, obs = task_env.reset()
-        front_images.append(obs.front_rgb)
-        terminate = False
-        t = 0
-        while not terminate and t < 300:
-            # prcess observations for agent
-            front_rgb, low_dim_state = process_obs(obs, transform)
-            front_rgb = front_rgb.unsqueeze(0).to(device)
-            low_dim_state = low_dim_state.unsqueeze(0).to(device)
-
-            action = agent.get_action(front_rgb, low_dim_state)
-            denormalized_action = denormalize_action(action.detach().cpu(), torch.tensor(base_cfg.transform.action_min), torch.tensor(base_cfg.transform.action_max))
-            obs, reward, terminate = task_env.step(denormalized_action.numpy()[0])
-            front_images.append(obs.front_rgb)
-            t += 1
-            total_reward += reward
-
-        # for now only keep track of the final reward
-        rewards.append(reward)
-
-        if reward > best_reward:
-            best_reward = reward
-            best_images = front_images
-
-
-    # Convert to numpy array of shape (T, H, W, C)
-    video_array = np.stack(best_images, axis=0)
-
-    # Convert to format required by wandb.Video (T, C, H, W)
-    video_array = video_array.transpose(0, 3, 1, 2)  # (T, H, W, C) -> (T, C, H, W)
-
-    rlbench_env.shutdown()
-
-    return rewards
-
-
-
-def save_table(model_rounds, rmse_values, rmse_std_values, success_rates, success_rates_std, txt_file_path):
-    # Generate a formatted table manually without using PrettyTable
-
-    # Define column headers
-    table_str = f"{'Model Round':<15}{'RMSE':<15}{'RMSE std':<15}{'Success Rate':<15}{'Success Std':<15}\n"
-    table_str += "=" * 60 + "\n"  # Adjusted separator line for new column
-
-    # Add rows
-    for round_num, rmse, rmse_std, success, success_std in zip(model_rounds, rmse_values, rmse_std_values, success_rates, success_rates_std):
-        table_str += f"{round_num:<15}{rmse:<15.4f}{rmse_std:<15.4f}{success:<15.4f}{success_std:<15.4f}\n"
-
-    # Print the table
-    print(table_str)
-
-    with open(txt_file_path, "w") as f:
-        f.write(table_str)
-
-    # Output confirmation of saved file
-    print(f"Saved results table to {txt_file_path}")
-
-
-@ray.remote
-def evaluate_single_env(idx_evaluate, net_args, model_path, dataset_config, base_cfg):
-    """Function to run evaluation for a single environment"""
-    print(f"Running online evaluation for env {idx_evaluate}")
-    # Load model
-    agent = Agent(**net_args)
-    agent.load_state_dict(model_path)
-    rewards = online_evaluation(
-        agent, "cpu", get_image_transform(dataset_config), base_cfg, idx_evaluate, dataset_config.dataset.num_episodes_live
-    )
-    return rewards
-
-
-def test_model(current_round, model_path, test_dataset, device, net_args, simulator, dataset_config):
-    
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(device)  # Ensure correct GPU allocation
-    print(f"Running evaluation on device {device}")
-
-    """Evaluate a model on a test dataset, running multiple jobs per GPU."""
-    # Load model
-    agent = Agent(**net_args)
-    agent.load_state_dict(model_path)
-    agent.policy.to(f"cuda:{device}")
-
-
-    metrics = {}
-    metrics["loss_per_env"] = {}
-
-    loss_values = []  # Store individual loss values
-
-    for idx, dataset in enumerate(test_dataset):
-        print(f"Running offline evaluation for env {idx}")
-        
-        # Compute RMSE (loss)
-        loss = validate_one_epoch(agent, dataset, device=f"cuda:{device}")
-        
-        # Store the loss value
-        loss_values.append(loss)
-        
-        # Track loss per environment
-        metrics["loss_per_env"][dataset_config.dataset.final_test_env_idx_range[0] + idx] = loss
-
-    # Compute mean and standard deviation
-    mean_loss = np.mean(loss_values)
-    std_loss = np.std(loss_values)  # Use ddof=1 for sample std deviation
-
-
-    if simulator:
-        print("Loading config from: ", dataset_config.dataset.root_dir + f"/{dataset_config.dataset.task}/{dataset_config.dataset.task}_fed.yaml")
-        base_cfg = OmegaConf.load(
-            dataset_config.dataset.root_dir + f"/{dataset_config.dataset.task}/{dataset_config.dataset.task}_fed.yaml"
-        )
-        base_cfg.dataset = dataset_config.dataset
-        base_cfg.transform = dataset_config.transform
-
-
-        ################################ PARALLELISM WITH RAY ################################
-        # Submit parallel jobs for each environment using Ray
-        futures = [
-            evaluate_single_env.remote(idx, net_args, model_path, dataset_config, base_cfg)
-            for idx in dataset_config.dataset.final_test_live_idxs
-        ]
-
-        results = ray.get(futures)  # Retrieve results
-
-        # Aggregate results, now there are lists of lists as we have all the rewards for each environments, and we want to compute the average and std
-        flattened_rewards = np.concatenate(results)
-
-        # Compute mean and standard deviation
-        mean_reward = np.mean(flattened_rewards)
-        std_reward = np.std(flattened_rewards)
-        
-        metrics = {"mean_reward": mean_reward, "std_reward": std_reward}
-
-
-    return current_round, mean_loss, std_loss, metrics
-
-
-
-@ray.remote(num_gpus=1 / JOBS_PER_GPU)  # Allow multiple j"obs per GPU
-def evaluate_model(current_round, model_path, test_dataset, device, net_args, simulator, dataset_config):
-    
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(device)  # Ensure correct GPU allocation
-    print(f"Running evaluation on device {device}")
-
-    """Evaluate a model on a test dataset, running multiple jobs per GPU."""
-    # Load model
-    agent = Agent(**net_args)
-    agent.load_state_dict(model_path)
-    agent.policy.to(f"cuda:{device}")
-
-
-    metrics = {}
-    metrics["loss_per_env"] = {}
-
-    loss_values = []  # Store individual loss values
-
-    for idx, dataset in enumerate(test_dataset):
-        print(f"Running offline evaluation for env {idx}")
-        
-        # Compute RMSE (loss)
-        loss = validate_one_epoch(agent, dataset, device=f"cuda:{device}")
-        
-        # Store the loss value
-        loss_values.append(loss)
-        
-        # Track loss per environment
-        metrics["loss_per_env"][dataset_config.dataset.final_test_env_idx_range[0] + idx] = loss
-
-    # Compute mean and standard deviation
-    mean_loss = np.mean(loss_values)
-    std_loss = np.std(loss_values)
-
-    if simulator:
-        print("Loading config from: ", dataset_config.dataset.root_dir + f"/{dataset_config.dataset.task}/{dataset_config.dataset.task}_fed.yaml")
-        base_cfg = OmegaConf.load(
-            dataset_config.dataset.root_dir + f"/{dataset_config.dataset.task}/{dataset_config.dataset.task}_fed.yaml"
-        )
-        base_cfg.dataset = dataset_config.dataset
-        base_cfg.transform = dataset_config.transform
-
-        ################################ PARALLELISM WITH RAY ################################
-        # Submit parallel jobs for each environment using Ray
-        futures = [
-            evaluate_single_env.remote(idx, net_args, model_path, dataset_config, base_cfg)
-            for idx in dataset_config.dataset.final_eval_live_idxs
-        ]
-
-        results = ray.get(futures)  # Retrieve results
-
-        # Aggregate results, now there are lists of lists as we have all the rewards for each environments, and we want to compute the average and std
-        flattened_rewards = np.concatenate(results)
-
-        # Compute mean and standard deviation
-        mean_reward = np.mean(flattened_rewards)
-        std_reward = np.std(flattened_rewards)
-
-        metrics = {"mean_reward": mean_reward, "std_reward": std_reward}
-
-
-    return current_round, mean_loss, std_loss, metrics
-
-
-
-def main(task="slide_block_to_target", local_epochs=100, rounds_to_evaluate=20, fraction_fit=0.05, train_test_split=0.9):
-    print(f"Running evaluation for task {task} with {rounds_to_evaluate} rounds. Params {local_epochs} local epochs, train_split {train_test_split}, and {fraction_fit} fraction of clients.")
-    start_time = time.time()
-    # get omegaconf config
-    ###############
-    dataset_config_path = f"elsa_robotics/dataset_config_{task}.yaml"
-    print(f"Loading dataset config from {dataset_config_path}")
-    config = OmegaConf.load(dataset_config_path)
-
-    net_args = {
+from elsa_learning_agent.kinematics import LOW_DIM_STATE_DIM
+from elsa_learning_agent.utils import (
+    denormalize_action,
+    get_image_transform,
+    load_environment,
+    process_obs,
+)
+from federated_elsa_robotics.task import validate_one_epoch
+
+
+def build_net_args():
+    return {
         "image_channels": 3,
-        "low_dim_state_dim": 8,
+        "low_dim_state_dim": LOW_DIM_STATE_DIM,
         "action_dim": 8,
         "image_size": (128, 128),
     }
 
-    model_name = f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}_round_"  # Adjust as needed
-    model_paths = [os.path.join("model_checkpoints", config.dataset.task, model_name + f"{i+1}.pth") for i in range(rounds_to_evaluate)]
 
-    def create_config(idx): 
-        cur_config = OmegaConf.load(dataset_config_path)
-        cur_config.dataset.env_id = idx
-        # Use evaluation dataset for the server
-        cur_config.dataset.root_dir = cur_config.dataset.root_eval_dir
-        cur_config.dataset.train_split = 0.1        # load only 10 percent of the data as we evaluate on 10 new environments
-        cur_config.dataset.test_split = 0.0
-        cur_config.dataset.num_server_rounds = rounds_to_evaluate
-        cur_config.dataset.local_epochs = local_epochs
-        return cur_config
-
-    config = create_config(0)
-    eval_dataset = [
-            DataLoader(ImitationDataset(config=create_config(idx), train=True), batch_size=32, shuffle=False, num_workers=64)
-        for idx in range(*config.dataset.final_eval_env_idx_range)]
+def clone_config(config):
+    return OmegaConf.create(OmegaConf.to_container(config, resolve=True))
 
 
-    # Get assigned GPU IDs from CUDA_VISIBLE_DEVICES
-    if "CUDA_VISIBLE_DEVICES" in os.environ:
-        assigned_gpus = list(map(int, os.environ["CUDA_VISIBLE_DEVICES"].split(",")))
+def load_agent(model_path, device):
+    agent = Agent(**build_net_args())
+    state = torch.load(model_path, map_location=device)
+    agent.policy.load_state_dict(state)
+    agent.policy.to(device)
+    agent.eval()
+    return agent
+
+
+def build_split_config(base_config, task, split, env_id):
+    config = clone_config(base_config)
+    config.dataset.task = task
+    config.dataset.env_id = env_id
+    if "train_split" not in config.dataset:
+        config.dataset.train_split = 1.0
+    if "test_split" not in config.dataset:
+        config.dataset.test_split = 0.0
+    if split == "training":
+        config.dataset.root_dir = config.dataset.root_dir
+    elif split == "eval":
+        config.dataset.root_dir = config.dataset.root_eval_dir
+    elif split == "test":
+        config.dataset.root_dir = config.dataset.root_test_dir
     else:
-        assigned_gpus = list(range(torch.cuda.device_count()))  # Fallback
-
-    print(f"Assigned GPUs: {assigned_gpus}")  # Debugging
-
-    device_list = assigned_gpus
-    # print(f"device list: {device_list}")
+        raise ValueError(f"Unsupported split: {split}")
+    return config
 
 
-    # Submit initial batch of jobs
-    futures = [
-        evaluate_model.remote(i, model_path, eval_dataset, 0, net_args, True, config)
-        for i, model_path in enumerate(model_paths[:JOBS_PER_GPU])
-    ]
+def build_offline_env_ids(config, split):
+    if split == "eval":
+        start, end = config.dataset.final_eval_env_idx_range
+    elif split == "test":
+        start, end = config.dataset.final_test_env_idx_range
+    else:
+        raise ValueError(f"Unsupported split: {split}")
+    return list(range(start, end))
 
-    # Process results in batches
-    results = []
-    remaining_models = model_paths[JOBS_PER_GPU:]
 
-    while futures:
-        # Wait for any job to complete
-        done, futures = ray.wait(futures, num_returns=1)
+def build_live_env_ids(config, split):
+    if split == "eval":
+        return list(config.dataset.final_eval_live_idxs)
+    if split == "test":
+        return list(config.dataset.final_test_live_idxs)
+    raise ValueError(f"Unsupported split: {split}")
 
-        # Collect the result from the completed job
-        results.extend(ray.get(done))
 
-        # If there are remaining models, submit the next one
-        if remaining_models:
-            next_model_path = remaining_models.pop(0)
-            next_future = evaluate_model.remote(
-                len(results) + len(futures), next_model_path, eval_dataset, 0, net_args, True, config
+def evaluate_offline(agent, base_config, task, split, device, batch_size, num_workers):
+    env_ids = build_offline_env_ids(base_config, split)
+    loss_per_env = {}
+    losses = []
+    for env_id in env_ids:
+        config = build_split_config(base_config, task, split, env_id)
+        loader = DataLoader(
+            ImitationDataset(config=config, train=True),
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+        )
+        loss = validate_one_epoch(agent, loader, device=device)
+        loss_per_env[env_id] = float(loss)
+        losses.append(float(loss))
+    return {
+        "env_ids": env_ids,
+        "loss_per_env": loss_per_env,
+        "mean_loss": float(np.mean(losses)),
+        "std_loss": float(np.std(losses)),
+    }
+
+
+def run_live_episodes(agent, device, transform, base_cfg, idx_environment, num_episodes):
+    collection_cfg_path = os.path.join(
+        base_cfg.dataset.root_dir,
+        base_cfg.env.task_name,
+        f"{base_cfg.env.task_name}_fed.json",
+    )
+    with open(collection_cfg_path, "r", encoding="utf-8") as fh:
+        collection_cfg = json.load(fh)
+
+    task_env, rlbench_env = load_environment(base_cfg, collection_cfg, idx_environment, headless=True)
+    rewards = []
+    try:
+        for _ in range(num_episodes):
+            _, obs = task_env.reset()
+            terminate = False
+            reward = 0.0
+            steps = 0
+            while not terminate and steps < 300:
+                front_rgb, low_dim_state = process_obs(obs, transform)
+                front_rgb = front_rgb.unsqueeze(0).to(device)
+                low_dim_state = low_dim_state.unsqueeze(0).to(device)
+                action = agent.get_action(front_rgb, low_dim_state)
+                denormalized_action = denormalize_action(
+                    action.detach().cpu(),
+                    torch.tensor(base_cfg.transform.action_min),
+                    torch.tensor(base_cfg.transform.action_max),
+                )
+                obs, reward, terminate = task_env.step(denormalized_action.numpy()[0])
+                steps += 1
+            rewards.append(float(reward))
+    finally:
+        rlbench_env.shutdown()
+    return rewards
+
+
+def evaluate_online(agent, base_config, task, split, device):
+    live_cfg = clone_config(base_config)
+    if split == "eval":
+        live_cfg.dataset.root_dir = live_cfg.dataset.root_eval_dir
+    elif split == "test":
+        live_cfg.dataset.root_dir = live_cfg.dataset.root_test_dir
+    else:
+        raise ValueError(f"Unsupported split: {split}")
+
+    fed_cfg = OmegaConf.load(os.path.join(live_cfg.dataset.root_dir, task, f"{task}_fed.yaml"))
+    live_cfg.env = fed_cfg.env
+    live_cfg.data = fed_cfg.data
+    live_cfg.transform = clone_config(base_config).transform
+    # `opengl3` crashes in this headless server setup. Force the simpler
+    # renderer path so live evaluation can run under Xvfb/software GL.
+    live_cfg.data.renderer = "opengl"
+    transform = get_image_transform(base_config)
+
+    env_ids = build_live_env_ids(base_config, split)
+    rewards_per_env = {}
+    flattened_rewards = []
+    for env_id in env_ids:
+        rewards = run_live_episodes(
+            agent=agent,
+            device=device,
+            transform=transform,
+            base_cfg=live_cfg,
+            idx_environment=env_id,
+            num_episodes=base_config.dataset.num_episodes_live,
+        )
+        rewards_per_env[env_id] = rewards
+        flattened_rewards.extend(rewards)
+
+    return {
+        "env_ids": env_ids,
+        "rewards_per_env": rewards_per_env,
+        "mean_reward": float(np.mean(flattened_rewards)),
+        "std_reward": float(np.std(flattened_rewards)),
+    }
+
+
+def checkpoint_pattern(task, local_epochs, fraction_fit, train_test_split):
+    return os.path.join(
+        "model_checkpoints",
+        task,
+        f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}_round_*.pth",
+    )
+
+
+def discover_checkpoints(task, local_epochs, fraction_fit, train_test_split):
+    round_to_path = {}
+    for path in glob.glob(checkpoint_pattern(task, local_epochs, fraction_fit, train_test_split)):
+        round_str = os.path.splitext(path)[0].rsplit("_round_", 1)[-1]
+        if round_str.isdigit():
+            round_to_path[int(round_str)] = path
+    return round_to_path
+
+
+def ensure_results_dir(task, local_epochs, fraction_fit, train_test_split):
+    path = os.path.join(
+        "results",
+        task,
+        f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}",
+    )
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def save_outputs(results, result_dir, plotting):
+    results_json = os.path.join(result_dir, "results.json")
+    with open(results_json, "w", encoding="utf-8") as fh:
+        json.dump(results, fh, indent=2)
+
+    results_txt = os.path.join(result_dir, "results.txt")
+    with open(results_txt, "w", encoding="utf-8") as fh:
+        for result in results:
+            fh.write(
+                f"round={result['round']} "
+                f"mean_loss={result['offline']['mean_loss']:.6f} "
+                f"std_loss={result['offline']['std_loss']:.6f} "
+                f"mean_success={result.get('online', {}).get('mean_reward', 0.0):.6f} "
+                f"std_success={result.get('online', {}).get('std_reward', 0.0):.6f}\n"
             )
-            futures.append(next_future)
+
+    if plotting and results:
+        rounds = [result["round"] for result in results]
+        mean_losses = [result["offline"]["mean_loss"] for result in results]
+        plt.figure(figsize=(10, 5))
+        plt.plot(rounds, mean_losses, marker="o")
+        plt.xlabel("Round")
+        plt.ylabel("Mean Loss")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(result_dir, "mean_loss.png"))
+        plt.close()
+
+        if "online" in results[0]:
+            mean_rewards = [result["online"]["mean_reward"] for result in results]
+            plt.figure(figsize=(10, 5))
+            plt.plot(rounds, mean_rewards, marker="o")
+            plt.xlabel("Round")
+            plt.ylabel("Mean Success Rate")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(result_dir, "mean_success_rate.png"))
+            plt.close()
 
 
-    # Process results and sort by model_round
-    sorted_results = sorted(results, key=lambda x: x[0])  # Sort by model_round
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate ELSA checkpoints offline and online.")
+    parser.add_argument("--task", type=str, required=True)
+    parser.add_argument("--local_epochs", type=int, default=50)
+    parser.add_argument("--fraction_fit", type=float, default=0.05)
+    parser.add_argument("--train_test_split", type=float, default=0.9)
+    parser.add_argument("--round", type=int, nargs="*", default=None)
+    parser.add_argument("--rounds_to_evaluate", type=int, default=None)
+    parser.add_argument("--split", type=str, default="eval", choices=["eval", "test"])
+    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--simulator", action="store_true")
+    parser.add_argument("--plotting", action="store_true")
+    args = parser.parse_args()
 
-    # Extract sorted data
-    model_rounds = [res[0] for res in sorted_results]
-    print(model_rounds)
-    rmse_values = [res[1] for res in sorted_results]
-    rmse_std = [res[1] for res in sorted_results]
-    success_rates = [res[3].get("mean_reward", 0) for res in sorted_results]
-    success_rates_std = [res[3].get("std_reward", 0) for res in sorted_results]
+    start_time = time.time()
+    config = OmegaConf.load("dataset_config.yaml")
+    checkpoint_map = discover_checkpoints(
+        task=args.task,
+        local_epochs=args.local_epochs,
+        fraction_fit=args.fraction_fit,
+        train_test_split=args.train_test_split,
+    )
+    if not checkpoint_map:
+        raise FileNotFoundError("No checkpoints found for the requested configuration.")
 
-    # get the directory of the model checkpoints
-    model_dir = os.path.dirname(model_paths[0])
+    if args.round:
+        rounds = [round_num for round_num in args.round if round_num in checkpoint_map]
+    else:
+        rounds = sorted(checkpoint_map)
+        if args.rounds_to_evaluate is not None:
+            rounds = rounds[: args.rounds_to_evaluate]
+    if not rounds:
+        raise FileNotFoundError("Requested rounds do not exist.")
 
-    # Generate new filenames for saving
-    plot_rmse_path = os.path.join(model_dir.replace("model_checkpoints", "results"),  f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}", "rmse.png")
-    plot_success_path = os.path.join(model_dir.replace("model_checkpoints", "results"), f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}", "success_rate.png")
-    results_pickle_path = os.path.join(model_dir.replace("model_checkpoints", "results"), f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}", "results.pkl")
-    txt_file_path = os.path.join(model_dir.replace("model_checkpoints", "results"), f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}", "results.txt")
-    time_file_path = os.path.join(model_dir.replace("model_checkpoints", "results"), f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}", "time.txt")
+    device = torch.device(args.device)
+    results = []
+    for round_num in rounds:
+        model_path = checkpoint_map[round_num]
+        print(f"Evaluating round {round_num}: {model_path}")
+        agent = load_agent(model_path, device=device)
+        offline = evaluate_offline(
+            agent=agent,
+            base_config=config,
+            task=args.task,
+            split=args.split,
+            device=args.device,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+        )
+        result = {"round": round_num, "model_path": model_path, "offline": offline}
+        if args.simulator:
+            result["online"] = evaluate_online(
+                agent=agent,
+                base_config=config,
+                task=args.task,
+                split=args.split,
+                device=args.device,
+            )
+        results.append(result)
 
-    # Prepare directory for results
-    os.makedirs(os.path.dirname(plot_rmse_path), exist_ok=True)
+    result_dir = ensure_results_dir(
+        task=args.task,
+        local_epochs=args.local_epochs,
+        fraction_fit=args.fraction_fit,
+        train_test_split=args.train_test_split,
+    )
+    save_outputs(results, result_dir, plotting=args.plotting)
 
-    # Create RMSE plot
-    plt.figure(figsize=(10, 5))
-    plt.plot(model_rounds, rmse_values, marker="o", linestyle="-")
-    plt.xlabel("Model Round")
-    plt.ylabel("RMSE")
-    plt.title("RMSE per Model Round")
-    plt.xticks(rotation=45)
-    plt.grid(True)
-    plt.savefig(plot_rmse_path)
-    plt.close()
-
-    # Create Success Rate plot
-    plt.figure(figsize=(10, 5))
-    plt.plot(model_rounds, success_rates, marker="o", linestyle="-", color="green")
-    plt.xlabel("Model Round")
-    plt.ylabel("Success Rate")
-    plt.title("Success Rate per Model Round")
-    plt.xticks(rotation=45)
-    plt.grid(True)
-    plt.savefig(plot_success_path)
-    plt.close()
-
-    save_table(model_rounds, rmse_values,rmse_std, success_rates, success_rates_std, txt_file_path)
-
-    with open(results_pickle_path, "wb") as f:
-        pickle.dump(results, f)
-
-    # Output confirmation of saved files
-    print(f"Saved RMSE plot to {plot_rmse_path}")
-    print(f"Saved Success Rate plot to {plot_success_path}")
-    print(f"Saved aggregated results to {results_pickle_path}")
-
-
-    ####################### FINAL TEST EVALUATION on BEST MODEL #######################
-    best_round = success_rates.index(max(success_rates))
-    best_model_path = model_paths[best_round]
-
-    test_dataset = [
-            DataLoader(ImitationDataset(config=create_config(idx), train=True), batch_size=32, shuffle=False, num_workers=64)
-        for idx in range(*config.dataset.final_test_env_idx_range)]
-
-    current_round, mean_loss, std_loss, metrics = test_model(best_round, best_model_path, test_dataset, 0, net_args, True, config)
-
-    # create a text file to save these final results
-    final_results_txt_path = os.path.join(model_dir.replace("model_checkpoints", "results"), f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}", "final_test_results.txt")
-
-    print(f"Best round: {best_round}")
-    print(f"Best model path: {best_model_path}")
-    print(f"Mean loss: {mean_loss}")
-    print(f"Std loss: {std_loss}")
-    print(f"Mean success rate: {metrics['mean_reward']}")
-    print(f"Std success rate: {metrics['std_reward']}")
-    with open(final_results_txt_path, "w") as f:
-        f.write(f"Best round: {best_round}\n")
-        f.write(f"Best model path: {best_model_path}\n")
-        f.write(f"Mean loss: {mean_loss}\n")
-        f.write(f"Std loss: {std_loss}\n")
-        f.write(f"Mean success rate: {metrics["mean_reward"]}\n")
-        f.write(f"Std success rate: {metrics["std_reward"]}\n")
-    print(f"Final test results saved to {final_results_txt_path}")
-
-    final_time = (time.time() - start_time)/60
-
-    print(f"Total time taken: {final_time:.2f} minutes")
-    # save this to a file
-    with open(time_file_path, "a") as f:
-        f.write(f"Total evaluation time taken: {final_time:.2f} minutes\n\n")
-    
-
-
+    best_key = (
+        lambda item: item["online"]["mean_reward"]
+        if "online" in item
+        else -item["offline"]["mean_loss"]
+    )
+    best_result = max(results, key=best_key)
+    print(json.dumps(best_result, indent=2))
+    print(f"Saved results to {result_dir}")
+    print(f"Total evaluation time: {(time.time() - start_time) / 60:.2f} minutes")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run Behavior Cloning Policy with given parameters.")
-
-    parser.add_argument("--task", type=str, default="slide_block_to_target", help="Type of input modality (e.g., 'slide_block_to_target', close_box)")
-    parser.add_argument("--local_epochs", type=int, default=100,  help="Number of local training epochs")
-    parser.add_argument("--rounds_to_evaluate", type=int, default=10,  help="Number of rounds to evaluate")
-    parser.add_argument("--fraction_fit", type=float, default=0.05, help="Fraction of clients participating in federated training")
-    parser.add_argument("--train_test_split", type=float, default=1.0, help="Train test split")
-    parser.add_argument("--plotting", action="store_true", help="Plotting the results")
-
-    args = parser.parse_args()
-
-    main(
-        modality=args.modality,
-        task=args.task,
-        local_epochs=args.local_epochs,
-        rounds_to_evaluate=args.rounds_to_evaluate,
-        fraction_fit=args.fraction_fit,
-        train_test_split=args.train_test_split
-    )
+    main()

@@ -10,8 +10,8 @@ license = "Apache-2.0"
 dependencies = [
     "flwr[simulation]>=1.15.1",
     "flwr-datasets[vision]>=0.5.0",
-    "torch==2.5.1",
-    "torchvision==0.20.1",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
     "torchaudio",
     "matplotlib",
     "wandb",
@@ -47,6 +47,7 @@ fraction-eval = 0.0025
 # server-device = "cpu"
 server-device = "cuda:0"
 use-wandb = true
+strategy-name = "fedavg"
 
 # DatasetOptions
 dataset-config-path="dataset_config.yaml"
@@ -56,15 +57,32 @@ dataset-task= "close_box"
 
 # Samples per client
 train-split= 0.9
+save-rounds = "5,25,50,100"
 
-[tool.flwr.federations]
-default = "local-simulation"
 
-[tool.flwr.federations.local-simulation]
-# Number of clients in the federation (a subset will be selected for each round based on the fraction-fit parameter)
-options.num-supernodes = 400
+#######################################################################
+# CONFIGURATION MIGRATION NOTICE:
+#
+# What was previously called "federation config" for SuperLink
+# connections in pyproject.toml has been renamed and moved.
+#
+# These settings are now **SuperLink connection configuration**
+# and are defined in the Flower configuration file.
+#
+# The entries below are commented out intentionally and are kept
+# only as a migration reference.
+#
+# Docs: https://flower.ai/docs/framework/ref-flower-configuration.html
+#######################################################################
 
-# Number of CPU cores available to each client
-options.backend.client-resources.num-cpus = 2
-# Define the number of GPUs available to the clients (If we have 20 clients and 1 GPU, we can set this to 0.05)
-options.backend.client-resources.num-gpus = 0.05
+# [tool.flwr.federations]
+# default = "local-simulation"
+
+# [tool.flwr.federations.local-simulation]
+# # Number of clients in the federation (a subset will be selected for each round based on the fraction-fit parameter)
+# options.num-supernodes = 400
+
+# # Number of CPU cores available to each client
+# options.backend.client-resources.num-cpus = 2
+# # Define the number of GPUs available to the clients (If we have 20 clients and 1 GPU, we can set this to 0.05)
+# options.backend.client-resources.num-gpus = 0.05

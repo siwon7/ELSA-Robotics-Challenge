@@ -3,13 +3,16 @@ import hydra
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from torchvision import transforms
 from tqdm import tqdm
 from torch.utils.data import Dataset
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
-from elsa_learning_agent.utils import process_obs, normalize_action, get_image_transform
-from colosseum.rlbench.datacontainer import DataContainer
+from elsa_learning_agent.dataset.compat import (
+    get_image_transform,
+    load_pickled_data,
+    normalize_action,
+    process_obs,
+)
 
 
 class ImitationDataset(Dataset):
@@ -20,8 +23,7 @@ class ImitationDataset(Dataset):
         train_split = config.dataset.train_split
         data_path = os.path.join(self.root_dir, f"{task}", f"env_{env_id}", "episodes_observations.pkl.gz")
         
-        datacontainer = DataContainer()
-        demos_raw_data = datacontainer.load(data_path).data
+        demos_raw_data = load_pickled_data(data_path)
         self.normalize = normalize
         self.action_min = torch.tensor(config.transform.action_min)
         self.action_max = torch.tensor(config.transform.action_max)

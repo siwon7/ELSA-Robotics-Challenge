@@ -1,22 +1,16 @@
-from colosseum.rlbench.utils import ObservationConfigExt, name_to_class, check_and_make
-from colosseum.rlbench.extensions.environment import EnvironmentExt
 import numpy as np
-
-from rlbench.action_modes.action_mode import MoveArmThenGripper
-from rlbench.action_modes.arm_action_modes import JointVelocity
-from rlbench.action_modes.gripper_action_modes import Discrete
-from colosseum import (
-    ASSETS_CONFIGS_FOLDER,
-    ASSETS_JSON_FOLDER,
-    TASKS_PY_FOLDER,
-    TASKS_TTM_FOLDER,
-)
 import cv2
 import os
 import torch
-from colosseum.tools.dataset_generator_onefile_fed import get_env_config
 import matplotlib.pyplot as plt
 from torchvision import transforms
+from omegaconf import OmegaConf
+from elsa_learning_agent.kinematics import build_low_dim_state
+
+try:
+    OmegaConf.register_new_resolver("eval", eval)
+except ValueError:
+    pass
 
 def get_image_transform(config_file):
     transform = transforms.Compose([
@@ -38,7 +32,10 @@ def process_obs(obs, transform=None):
     front_image = transform(front_image)
 
     # process observations for agent
-    low_dim_state = torch.tensor(np.concatenate((obs.joint_positions, np.array([obs.gripper_open]))), dtype=torch.float32)
+    low_dim_state = torch.tensor(
+        build_low_dim_state(obs.joint_positions, obs.gripper_open),
+        dtype=torch.float32,
+    )
 
     return front_image, low_dim_state
 
@@ -96,8 +93,36 @@ def load_environment(base_cfg, collection_cfg, idx_environment, headless=True):
         EnvironmentExt: The loaded environment.
     """
     
+    from colosseum.rlbench.utils import ObservationConfigExt, name_to_class
+    from colosseum.rlbench.extensions.environment import EnvironmentExt
+    from rlbench.action_modes.action_mode import MoveArmThenGripper
+    from rlbench.action_modes.arm_action_modes import JointVelocity
+    from rlbench.action_modes.gripper_action_modes import Discrete
+    from colosseum import TASKS_PY_FOLDER, TASKS_TTM_FOLDER
     task = name_to_class(base_cfg.env.task_name, TASKS_PY_FOLDER)
-    config = get_env_config(base_cfg, collection_cfg, idx_environment)
+    config = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
+    env_entries = collection_cfg.get("env_config", [])
+    env_entry = next(
+        (entry for entry in env_entries if entry.get("env_idx") == idx_environment),
+        None,
+    )
+    if env_entry is None:
+        raise ValueError(f"Environment index {idx_environment} not found in collection config")
+
+    env_factors = config.env.scene.factors
+    for variation_cfg in env_entry.get("variations_parameters", []):
+        var_type = variation_cfg["type"]
+        var_name = variation_cfg.get("name")
+        for factor_cfg in env_factors:
+            if factor_cfg.variation != var_type:
+                continue
+            if var_name is not None and "name" in factor_cfg and factor_cfg.name != var_name:
+                continue
+            for key, value in variation_cfg.items():
+                if key == "type":
+                    continue
+                factor_cfg[key] = value
+            break
 
     data_cfg, env_cfg = config.data, config.env
 

@@ -1,15 +1,12 @@
 import os
 import hydra
-import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from torchvision import transforms
 from tqdm import tqdm
 from torch.utils.data import Dataset
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
-from elsa_learning_agent.utils import process_obs, normalize_action, get_image_transform
-from colosseum.rlbench.datacontainer import DataContainer
+from elsa_learning_agent.dataset.compat import get_image_transform, load_pickled_data
 
 
 class EvalImitationDataset(Dataset):
@@ -19,8 +16,7 @@ class EvalImitationDataset(Dataset):
         env_id = config.dataset.env_id
         data_path = os.path.join(self.root_dir, f"{task}", f"env_{env_id}", "episodes_observations.pkl.gz")
         
-        datacontainer = DataContainer()
-        obs_raw_data = datacontainer.load(data_path)["data"]
+        obs_raw_data = load_pickled_data(data_path)
 
         self.transform = get_image_transform(config)
         self.data = []

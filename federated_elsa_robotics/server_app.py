@@ -2,16 +2,14 @@
 
 from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
-from federated_elsa_robotics.strategies import SaveModelStrategy
+from federated_elsa_robotics.strategies import build_strategy
 from federated_elsa_robotics.task import get_weights, set_weights, validate_one_epoch
 from omegaconf import OmegaConf
 import torch
-from torch.utils.data import DataLoader
 
-from elsa_learning_agent.agent import Agent
-from federated_elsa_robotics.eval_model import online_evaluation
+from elsa_learning_agent.agent_forward_kinematics import Agent
+from elsa_learning_agent.kinematics import LOW_DIM_STATE_DIM
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
-from elsa_learning_agent.utils import get_image_transform
 
 def gen_evaluate_fn(
     testloader: list[ImitationDataset],
@@ -40,6 +38,9 @@ def gen_evaluate_fn(
         loss = total_loss / len(testloader)
 
         if simulator:
+            from federated_elsa_robotics.eval_model import online_evaluation
+            from elsa_learning_agent.utils import get_image_transform
+
             # Load base config from dataset yaml
             base_cfg = OmegaConf.load(dataset_config.dataset["root_dir"] + f"/{dataset_config.dataset['task']}/{dataset_config.dataset['task']}_fed.yaml")
             base_cfg.dataset = dataset_config.dataset
@@ -73,12 +74,17 @@ def server_fn(context: Context):
     server_device = context.run_config["server-device"]
     use_wandb = context.run_config["use-wandb"]
     dataset_config_path = context.run_config["dataset-config-path"]
+    strategy_name = context.run_config["strategy-name"]
     conf = OmegaConf.load(dataset_config_path)
-    print(f"Starting server with l-ep={context.run_config["local-epochs"]}, ts={context.run_config["train-split"]}, fclients={fraction_fit}")
+    print(
+        f"Starting server with strategy={strategy_name}, "
+        f"l-ep={context.run_config['local-epochs']}, "
+        f"ts={context.run_config['train-split']}, fclients={fraction_fit}"
+    )
 
     net_args = {
         "image_channels": 3,
-        "low_dim_state_dim": 8,
+        "low_dim_state_dim": LOW_DIM_STATE_DIM,
         "action_dim": 8,
         "image_size": (128, 128),
     }
@@ -99,6 +105,7 @@ def server_fn(context: Context):
         cur_config.dataset.train_split = context.run_config["train-split"]
         cur_config.dataset.num_server_rounds = num_rounds
         cur_config.dataset.local_epochs = context.run_config["local-epochs"]
+        cur_config.dataset.save_rounds = context.run_config.get("save-rounds", "5,25,50,100")
         return cur_config
     config = create_config(0)
     # test_dataset = [
@@ -106,7 +113,8 @@ def server_fn(context: Context):
     #     for idx in range(*config.dataset["test_env_idx_range"])]
     
     # Define strategy
-    strategy = SaveModelStrategy(
+    strategy = build_strategy(
+        strategy_name,
         fraction_fit=fraction_fit,
         fraction_evaluate=fraction_evaluate,
         min_available_clients=2,

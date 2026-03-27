@@ -6,7 +6,7 @@ import torch
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context
 from federated_elsa_robotics.task import get_weights, load_data_colosseum, set_weights, train, validate_one_epoch
-from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.agent_forward_kinematics import Agent
 
 # Define Flower Client and client_fn
 class FlowerClient(NumPyClient):

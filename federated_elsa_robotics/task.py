@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
-from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.agent_forward_kinematics import Agent
 
 
 def load_data_colosseum(partition_id: int, num_partitions: int, train_split : float = 0.9, config: dict = None):
@@ -81,42 +81,9 @@ def train(agent: Agent, trainloader, epochs, device, config):
     return avg_trainloss
 
 def get_weights(agent: Agent):
-    weights = []
-    for model in ["cnn_encoder", "mlp_encoder", "mlp_policy"]:
-        model = getattr(agent.policy, model)
-        weights.append([val.cpu().numpy() for val in model.state_dict().values()])
-
-    # Flatten the weights
-    weights_flat = [val for model in weights for val in model]
-    """ weights_lengeth = [len(model) for model in weights] #[8, 4, 4]
-    print(f"Weights shape:")
-    for isx, model in enumerate(weights):
-        print(f"Shape for model: {["cnn_encoder", "mlp_encoder", "mlp_policy"][isx]}")
-        for val in model:
-            print("    ", val.shape) """
-    return weights_flat
+    return [val.cpu().numpy() for val in agent.policy.state_dict().values()]
 
 def set_weights(agent: Agent, parameters: list):
-
-    # Set the weights of the model BCPolicy
-    # unflatten the weights based on the [8, 4, 4] lengths
-    parameters = [parameters[:8], parameters[8:12], parameters[12:]]
-
-    """ # get curr_size
-    weights = []
-    # print("net attributes:", net.__dict__.keys())
-    # print(f"State dict keys: {net.state_dict().keys()}")
-    for model in ["cnn_encoder", "mlp_encoder", "mlp_policy"]:
-        model = getattr(net, model)
-        # weights[model] = {name: val.cpu().numpy() for name, val in model.state_dict().items()}
-        weights.append([val.cpu().numpy() for name, val in model.state_dict().items()])
-    for isx, model in enumerate(weights):
-        print(f"Shape for model: {["cnn_encoder", "mlp_encoder", "mlp_policy"][isx]}")
-        for val in model:
-            print("    ", val.shape) """
-
-    for idx, model in enumerate(["cnn_encoder", "mlp_encoder", "mlp_policy"]):
-        model = getattr(agent.policy, model)
-        params_dict = zip(model.state_dict().keys(), parameters[idx])
-        state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-        model.load_state_dict(state_dict, strict=True)
+    params_dict = zip(agent.policy.state_dict().keys(), parameters)
+    state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
+    agent.policy.load_state_dict(state_dict, strict=True)

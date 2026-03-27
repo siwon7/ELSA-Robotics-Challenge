@@ -61,7 +61,8 @@ class Agent():
         if device is None:
             self.policy.load_state_dict(torch.load(state_dict))
         else:
-            self.policy.load_state_dict(torch.load(state_dict), map_location=torch.device(device))
+            state = torch.load(state_dict, map_location=torch.device(device))
+            self.policy.load_state_dict(state)
         return self
     
     def save(self, path):
