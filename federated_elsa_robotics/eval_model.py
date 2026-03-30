@@ -11,7 +11,15 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from elsa_learning_agent.agent_forward_kinematics import Agent
+from elsa_learning_agent.agent_forward_kinematics import (
+    Agent,
+    FrozenBackboneCLSExtractor,
+    build_agent_kwargs,
+    build_policy_kwargs_from_config,
+    get_policy_class_name,
+    infer_policy_name_from_model_path,
+    policy_uses_cached_visual_features,
+)
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.kinematics import LOW_DIM_STATE_DIM
 from elsa_learning_agent.utils import (
@@ -23,26 +31,49 @@ from elsa_learning_agent.utils import (
 from federated_elsa_robotics.task import validate_one_epoch
 
 
-def build_net_args():
-    return {
-        "image_channels": 3,
-        "low_dim_state_dim": LOW_DIM_STATE_DIM,
-        "action_dim": 8,
-        "image_size": (128, 128),
-    }
+def build_net_args(config=None, policy_name=None):
+    kwargs = build_agent_kwargs(
+        image_channels=3,
+        low_dim_state_dim=LOW_DIM_STATE_DIM,
+        action_dim=8,
+        image_size=(128, 128),
+        config=config,
+    )
+    if policy_name is not None:
+        kwargs["policy_name"] = policy_name
+    return kwargs
 
 
 def clone_config(config):
     return OmegaConf.create(OmegaConf.to_container(config, resolve=True))
 
 
-def load_agent(model_path, device):
-    agent = Agent(**build_net_args())
+def load_agent(model_path, device, config=None, policy_name=None):
+    if policy_name is None:
+        default_policy = build_policy_kwargs_from_config(config).get("policy_name")
+        policy_name = infer_policy_name_from_model_path(
+            model_path,
+            default=default_policy,
+        )
+    agent = Agent(**build_net_args(config=config, policy_name=policy_name))
     state = torch.load(model_path, map_location=device)
     agent.policy.load_state_dict(state)
     agent.policy.to(device)
     agent.eval()
     return agent
+
+
+def build_policy_input_adapter(agent, config, device):
+    if not policy_uses_cached_visual_features(agent.policy_name):
+        return None
+
+    policy_kwargs = build_policy_kwargs_from_config(config)
+    extractor = FrozenBackboneCLSExtractor(
+        backbone_name=policy_kwargs.get("backbone_name"),
+        backbone_image_size=policy_kwargs.get("backbone_image_size"),
+    ).to(device)
+    extractor.eval()
+    return extractor
 
 
 def build_split_config(base_config, task, split, env_id):
@@ -105,7 +136,15 @@ def evaluate_offline(agent, base_config, task, split, device, batch_size, num_wo
     }
 
 
-def run_live_episodes(agent, device, transform, base_cfg, idx_environment, num_episodes):
+def run_live_episodes(
+    agent,
+    device,
+    transform,
+    base_cfg,
+    idx_environment,
+    num_episodes,
+    headless,
+):
     collection_cfg_path = os.path.join(
         base_cfg.dataset.root_dir,
         base_cfg.env.task_name,
@@ -114,19 +153,31 @@ def run_live_episodes(agent, device, transform, base_cfg, idx_environment, num_e
     with open(collection_cfg_path, "r", encoding="utf-8") as fh:
         collection_cfg = json.load(fh)
 
-    task_env, rlbench_env = load_environment(base_cfg, collection_cfg, idx_environment, headless=True)
+    task_env, rlbench_env = load_environment(
+        base_cfg,
+        collection_cfg,
+        idx_environment,
+        headless=headless,
+    )
+    input_adapter = build_policy_input_adapter(agent, base_cfg, device)
     rewards = []
+    max_steps = int(os.environ.get("ELSA_SIM_MAX_STEPS", "300"))
     try:
         for _ in range(num_episodes):
             _, obs = task_env.reset()
             terminate = False
             reward = 0.0
             steps = 0
-            while not terminate and steps < 300:
-                front_rgb, low_dim_state = process_obs(obs, transform)
-                front_rgb = front_rgb.unsqueeze(0).to(device)
-                low_dim_state = low_dim_state.unsqueeze(0).to(device)
-                action = agent.get_action(front_rgb, low_dim_state)
+            while not terminate and steps < max_steps:
+                with torch.no_grad():
+                    front_rgb, low_dim_state = process_obs(obs, transform)
+                    front_rgb = front_rgb.unsqueeze(0).to(device)
+                    if input_adapter is not None:
+                        # Convert inference-mode extractor output into a regular tensor
+                        # before passing it through the trainable policy head.
+                        front_rgb = input_adapter(front_rgb).float().clone()
+                    low_dim_state = low_dim_state.unsqueeze(0).to(device)
+                    action = agent.get_action(front_rgb, low_dim_state)
                 denormalized_action = denormalize_action(
                     action.detach().cpu(),
                     torch.tensor(base_cfg.transform.action_min),
@@ -153,12 +204,17 @@ def evaluate_online(agent, base_config, task, split, device):
     live_cfg.env = fed_cfg.env
     live_cfg.data = fed_cfg.data
     live_cfg.transform = clone_config(base_config).transform
-    # `opengl3` crashes in this headless server setup. Force the simpler
-    # renderer path so live evaluation can run under Xvfb/software GL.
-    live_cfg.data.renderer = "opengl"
+    live_cfg.data.renderer = os.environ.get("ELSA_SIM_RENDERER", "opengl")
     transform = get_image_transform(base_config)
 
     env_ids = build_live_env_ids(base_config, split)
+    max_envs = os.environ.get("ELSA_SIM_MAX_ENVS")
+    if max_envs:
+        env_ids = env_ids[: int(max_envs)]
+    num_episodes = int(
+        os.environ.get("ELSA_SIM_NUM_EPISODES", base_config.dataset.num_episodes_live)
+    )
+    headless = os.environ.get("ELSA_SIM_HEADLESS", "0") == "1"
     rewards_per_env = {}
     flattened_rewards = []
     for env_id in env_ids:
@@ -168,7 +224,8 @@ def evaluate_online(agent, base_config, task, split, device):
             transform=transform,
             base_cfg=live_cfg,
             idx_environment=env_id,
-            num_episodes=base_config.dataset.num_episodes_live,
+            num_episodes=num_episodes,
+            headless=headless,
         )
         rewards_per_env[env_id] = rewards
         flattened_rewards.extend(rewards)
@@ -181,28 +238,57 @@ def evaluate_online(agent, base_config, task, split, device):
     }
 
 
-def checkpoint_pattern(task, local_epochs, fraction_fit, train_test_split):
-    return os.path.join(
-        "model_checkpoints",
-        task,
-        f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}_round_*.pth",
+def checkpoint_stem(local_epochs, fraction_fit, train_test_split, strategy_name, policy_name):
+    return (
+        f"{strategy_name}_{get_policy_class_name(policy_name)}"
+        f"_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}"
     )
 
 
-def discover_checkpoints(task, local_epochs, fraction_fit, train_test_split):
+def checkpoint_pattern(task, local_epochs, fraction_fit, train_test_split, strategy_name, policy_name):
+    return os.path.join(
+        "model_checkpoints",
+        task,
+        checkpoint_stem(
+            local_epochs=local_epochs,
+            fraction_fit=fraction_fit,
+            train_test_split=train_test_split,
+            strategy_name=strategy_name,
+            policy_name=policy_name,
+        )
+        + "_round_*.pth",
+    )
+
+
+def discover_checkpoints(task, local_epochs, fraction_fit, train_test_split, strategy_name, policy_name):
     round_to_path = {}
-    for path in glob.glob(checkpoint_pattern(task, local_epochs, fraction_fit, train_test_split)):
+    for path in glob.glob(
+        checkpoint_pattern(
+            task,
+            local_epochs,
+            fraction_fit,
+            train_test_split,
+            strategy_name,
+            policy_name,
+        )
+    ):
         round_str = os.path.splitext(path)[0].rsplit("_round_", 1)[-1]
         if round_str.isdigit():
             round_to_path[int(round_str)] = path
     return round_to_path
 
 
-def ensure_results_dir(task, local_epochs, fraction_fit, train_test_split):
+def ensure_results_dir(task, local_epochs, fraction_fit, train_test_split, strategy_name, policy_name):
     path = os.path.join(
         "results",
         task,
-        f"BCPolicy_l-ep_{local_epochs}_ts_{train_test_split}_fclients_{fraction_fit}",
+        checkpoint_stem(
+            local_epochs=local_epochs,
+            fraction_fit=fraction_fit,
+            train_test_split=train_test_split,
+            strategy_name=strategy_name,
+            policy_name=policy_name,
+        ),
     )
     os.makedirs(path, exist_ok=True)
     return path
@@ -254,6 +340,8 @@ def main():
     parser.add_argument("--local_epochs", type=int, default=50)
     parser.add_argument("--fraction_fit", type=float, default=0.05)
     parser.add_argument("--train_test_split", type=float, default=0.9)
+    parser.add_argument("--strategy_name", type=str, default="fedavg")
+    parser.add_argument("--policy_name", type=str, default=None)
     parser.add_argument("--round", type=int, nargs="*", default=None)
     parser.add_argument("--rounds_to_evaluate", type=int, default=None)
     parser.add_argument("--split", type=str, default="eval", choices=["eval", "test"])
@@ -266,11 +354,16 @@ def main():
 
     start_time = time.time()
     config = OmegaConf.load("dataset_config.yaml")
+    policy_name = args.policy_name or build_policy_kwargs_from_config(config).get(
+        "policy_name"
+    )
     checkpoint_map = discover_checkpoints(
         task=args.task,
         local_epochs=args.local_epochs,
         fraction_fit=args.fraction_fit,
         train_test_split=args.train_test_split,
+        strategy_name=args.strategy_name,
+        policy_name=policy_name,
     )
     if not checkpoint_map:
         raise FileNotFoundError("No checkpoints found for the requested configuration.")
@@ -289,7 +382,12 @@ def main():
     for round_num in rounds:
         model_path = checkpoint_map[round_num]
         print(f"Evaluating round {round_num}: {model_path}")
-        agent = load_agent(model_path, device=device)
+        agent = load_agent(
+            model_path,
+            device=device,
+            config=config,
+            policy_name=policy_name,
+        )
         offline = evaluate_offline(
             agent=agent,
             base_config=config,
@@ -315,6 +413,8 @@ def main():
         local_epochs=args.local_epochs,
         fraction_fit=args.fraction_fit,
         train_test_split=args.train_test_split,
+        strategy_name=args.strategy_name,
+        policy_name=policy_name,
     )
     save_outputs(results, result_dir, plotting=args.plotting)
 

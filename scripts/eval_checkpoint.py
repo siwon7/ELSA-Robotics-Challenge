@@ -6,6 +6,10 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
+from elsa_learning_agent.agent_forward_kinematics import (
+    infer_policy_name_from_model_path,
+    policy_uses_cached_visual_features,
+)
 from federated_elsa_robotics.eval_model import evaluate_offline, evaluate_online, load_agent
 
 
@@ -36,6 +40,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--simulator", action="store_true")
     parser.add_argument("--output", default=None)
+    parser.add_argument("--policy-name", default=None)
     args = parser.parse_args()
 
     model_path = Path(args.model_path)
@@ -43,7 +48,14 @@ def main():
     task = args.task or inferred_task
 
     cfg = OmegaConf.load("dataset_config.yaml")
-    agent = load_agent(str(model_path), args.device)
+    policy_name = args.policy_name or infer_policy_name_from_model_path(
+        str(model_path),
+        default=cfg.model.get("policy_name"),
+    )
+    cfg.model.policy_name = policy_name
+    if policy_uses_cached_visual_features(policy_name):
+        cfg.model.cache_features = True
+    agent = load_agent(str(model_path), args.device, config=cfg, policy_name=policy_name)
     offline = evaluate_offline(
         agent=agent,
         base_config=cfg,
@@ -57,6 +69,7 @@ def main():
     result = {
         "task": task,
         "model_path": str(model_path),
+        "policy_name": policy_name,
         "local_epochs": local_epochs,
         "round": round_num,
         "mse": offline["mean_loss"],
