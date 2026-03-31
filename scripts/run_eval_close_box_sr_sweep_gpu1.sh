@@ -1,57 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
-conda activate elsa-robotics-challenge
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-export CUDA_VISIBLE_DEVICES=1
-export COPPELIASIM_ROOT=/home/cv25/siwon/coppeliasim/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$COPPELIASIM_ROOT"
-export QT_QPA_PLATFORM_PLUGIN_PATH="$COPPELIASIM_ROOT"
-export LIBGL_ALWAYS_SOFTWARE=1
+TASK="${ELSA_TASK:-close_box}"
+ROUNDS_CSV="${ELSA_ROUNDS:-28,30,40,50,58}"
+LOCAL_EPOCHS="${ELSA_LOCAL_EPOCHS:-50}"
+TRAIN_TEST_SPLIT="${ELSA_TRAIN_TEST_SPLIT:-0.9}"
+FRACTION_FIT="${ELSA_FRACTION_FIT:-0.05}"
+SPLIT="${ELSA_SPLIT:-eval}"
+OUT_DIR="${ELSA_OUTPUT_DIR:-$ROOT_DIR/results/${TASK}_sr_sweep}"
 
-cd /home/cv25/siwon/ELSA-Robotics-Challenge
+export CUDA_VISIBLE_DEVICES="${ELSA_CUDA_VISIBLE_DEVICES:-1}"
 
-xvfb-run -a python - <<'PY'
+mkdir -p "$OUT_DIR"
+
+IFS=',' read -r -a ROUNDS <<<"$ROUNDS_CSV"
+RESULT_FILES=()
+
+for round_num in "${ROUNDS[@]}"; do
+  output_json="$OUT_DIR/${TASK}_round_${round_num}.online.${SPLIT}.json"
+  "$SCRIPT_DIR/run_eval_checkpoint_online.sh" \
+    "model_checkpoints/${TASK}/BCPolicy_l-ep_${LOCAL_EPOCHS}_ts_${TRAIN_TEST_SPLIT}_fclients_${FRACTION_FIT}_round_${round_num}.pth" \
+    "$TASK" \
+    "$output_json" \
+    "$SPLIT"
+  RESULT_FILES+=("$output_json")
+done
+
+summary_json="$OUT_DIR/rounds_${ROUNDS_CSV//,/_}.json"
+
+"$ROOT_DIR/.venv/bin/python" - "${RESULT_FILES[@]}" "$summary_json" <<'PY'
 import json
+import sys
 from pathlib import Path
 
-from omegaconf import OmegaConf
-
-from federated_elsa_robotics.eval_model import evaluate_online, load_agent
-
-rounds = [28, 30, 40, 50, 58]
-cfg = OmegaConf.load("dataset_config.yaml")
-results = []
-
-for round_num in rounds:
-    ckpt = Path(
-        f"model_checkpoints/close_box/BCPolicy_l-ep_50_ts_0.9_fclients_0.05_round_{round_num}.pth"
-    )
-    print(f"=== round {round_num} ===", flush=True)
-    agent = load_agent(str(ckpt), "cuda:0")
-    online = evaluate_online(
-        agent=agent,
-        base_config=cfg,
-        task="close_box",
-        split="eval",
-        device="cuda:0",
-    )
-    result = {
-        "round": round_num,
-        "mean_reward": online["mean_reward"],
-        "std_reward": online["std_reward"],
-        "rewards_per_env": online["rewards_per_env"],
-    }
-    results.append(result)
-    print(json.dumps(result, indent=2), flush=True)
-
-out_dir = Path("results/close_box_sr_sweep")
-out_dir.mkdir(parents=True, exist_ok=True)
-out_path = out_dir / "rounds_28_30_40_50_58.json"
-out_path.write_text(json.dumps(results, indent=2))
-best = max(results, key=lambda item: item["mean_reward"])
-print("=== best ===", flush=True)
-print(json.dumps(best, indent=2), flush=True)
-print(f"saved_to={out_path}", flush=True)
+paths = [Path(p) for p in sys.argv[1:-1]]
+out_path = Path(sys.argv[-1])
+results = [json.loads(path.read_text()) for path in paths]
+best = max(results, key=lambda item: item.get("sr", 0.0))
+out_path.write_text(json.dumps({"results": results, "best": best}, indent=2))
+print(json.dumps(best, indent=2))
+print(f"saved_to={out_path}")
 PY

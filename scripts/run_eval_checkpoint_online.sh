@@ -22,12 +22,23 @@ if [ -n "${ELSA_POLICY_NAME:-}" ]; then
   EXTRA_ARGS+=(--policy-name "$ELSA_POLICY_NAME")
 fi
 
-conda run -n "$ELSA_ENV_NAME" \
-  python scripts/eval_checkpoint.py \
-  --model-path "$MODEL_PATH" \
-  --task "$TASK" \
-  --device "${ELSA_SIM_DEVICE:-cpu}" \
-  --split "$SPLIT" \
-  "${EXTRA_ARGS[@]}" \
-  --simulator \
-  --output "$OUTPUT_JSON"
+if [ -x "$ELSA_VENV_PATH/bin/python" ]; then
+  "$ELSA_VENV_PATH/bin/python" scripts/eval_checkpoint.py \
+    --model-path "$MODEL_PATH" \
+    --task "$TASK" \
+    --device "${ELSA_SIM_DEVICE:-cpu}" \
+    --split "$SPLIT" \
+    "${EXTRA_ARGS[@]}" \
+    --simulator \
+    --output "$OUTPUT_JSON"
+else
+  conda run -n "$ELSA_ENV_NAME" \
+    python scripts/eval_checkpoint.py \
+    --model-path "$MODEL_PATH" \
+    --task "$TASK" \
+    --device "${ELSA_SIM_DEVICE:-cpu}" \
+    --split "$SPLIT" \
+    "${EXTRA_ARGS[@]}" \
+    --simulator \
+    --output "$OUTPUT_JSON"
+fi

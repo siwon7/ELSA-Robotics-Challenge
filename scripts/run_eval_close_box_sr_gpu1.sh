@@ -1,25 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$HOME/miniconda3/etc/profile.d/conda.sh"
-conda activate elsa-robotics-challenge
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-export CUDA_VISIBLE_DEVICES=1
-export COPPELIASIM_ROOT=/home/cv25/siwon/coppeliasim/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$COPPELIASIM_ROOT"
-export QT_QPA_PLATFORM_PLUGIN_PATH="$COPPELIASIM_ROOT"
-export LIBGL_ALWAYS_SOFTWARE=1
+TASK="${ELSA_TASK:-close_box}"
+ROUND="${ELSA_ROUND:-28}"
+LOCAL_EPOCHS="${ELSA_LOCAL_EPOCHS:-50}"
+TRAIN_TEST_SPLIT="${ELSA_TRAIN_TEST_SPLIT:-0.9}"
+FRACTION_FIT="${ELSA_FRACTION_FIT:-0.05}"
+SPLIT="${ELSA_SPLIT:-eval}"
+OUTPUT_JSON="${ELSA_OUTPUT_JSON:-$ROOT_DIR/results/live_eval/${TASK}_round_${ROUND}.online.${SPLIT}.json}"
 
-cd /home/cv25/siwon/ELSA-Robotics-Challenge
+export CUDA_VISIBLE_DEVICES="${ELSA_CUDA_VISIBLE_DEVICES:-1}"
 
-xvfb-run -a python -m federated_elsa_robotics.eval_model \
-  --task close_box \
-  --local_epochs 50 \
-  --fraction_fit 0.05 \
-  --train_test_split 0.9 \
-  --round 28 \
-  --split eval \
-  --device cuda:0 \
-  --num_workers 4 \
-  --simulator \
-  --plotting
+"$SCRIPT_DIR/run_eval_checkpoint_online.sh" \
+  "model_checkpoints/${TASK}/BCPolicy_l-ep_${LOCAL_EPOCHS}_ts_${TRAIN_TEST_SPLIT}_fclients_${FRACTION_FIT}_round_${ROUND}.pth" \
+  "$TASK" \
+  "$OUTPUT_JSON" \
+  "$SPLIT"

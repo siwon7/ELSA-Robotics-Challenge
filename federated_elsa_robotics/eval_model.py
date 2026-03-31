@@ -9,8 +9,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
+from elsa_learning_agent.agent import Agent as LegacyBCAgent
 from elsa_learning_agent.agent_forward_kinematics import (
     Agent,
     FrozenBackboneCLSExtractor,
@@ -20,6 +21,7 @@ from elsa_learning_agent.agent_forward_kinematics import (
     infer_policy_name_from_model_path,
     policy_uses_cached_visual_features,
 )
+from elsa_learning_agent.dataset.compat import load_pickled_data
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.kinematics import LOW_DIM_STATE_DIM
 from elsa_learning_agent.utils import (
@@ -31,7 +33,18 @@ from elsa_learning_agent.utils import (
 from federated_elsa_robotics.task import validate_one_epoch
 
 
+LEGACY_BC_POLICY_NAME = "legacy_bc"
+
+
 def build_net_args(config=None, policy_name=None):
+    if policy_name == LEGACY_BC_POLICY_NAME:
+        return {
+            "image_channels": 3,
+            "low_dim_state_dim": 8,
+            "action_dim": 8,
+            "image_size": (128, 128),
+        }
+
     kwargs = build_agent_kwargs(
         image_channels=3,
         low_dim_state_dim=LOW_DIM_STATE_DIM,
@@ -48,13 +61,35 @@ def clone_config(config):
     return OmegaConf.create(OmegaConf.to_container(config, resolve=True))
 
 
+def infer_runtime_policy_name(model_path, config=None, policy_name=None):
+    if policy_name is not None:
+        return policy_name
+
+    default_policy = build_policy_kwargs_from_config(config).get("policy_name")
+    inferred = infer_policy_name_from_model_path(
+        model_path,
+        default=default_policy,
+    )
+    if os.path.basename(model_path).startswith("BCPolicy_"):
+        return LEGACY_BC_POLICY_NAME
+    return inferred
+
+
 def load_agent(model_path, device, config=None, policy_name=None):
-    if policy_name is None:
-        default_policy = build_policy_kwargs_from_config(config).get("policy_name")
-        policy_name = infer_policy_name_from_model_path(
-            model_path,
-            default=default_policy,
-        )
+    policy_name = infer_runtime_policy_name(
+        model_path,
+        config=config,
+        policy_name=policy_name,
+    )
+
+    if policy_name == LEGACY_BC_POLICY_NAME:
+        agent = LegacyBCAgent(**build_net_args(config=config, policy_name=policy_name))
+        agent.load_state_dict(model_path, device=device)
+        agent.policy.to(device)
+        agent.legacy_low_dim_state_dim = 8
+        agent.eval()
+        return agent
+
     agent = Agent(**build_net_args(config=config, policy_name=policy_name))
     state = torch.load(model_path, map_location=device)
     agent.policy.load_state_dict(state)
@@ -64,7 +99,8 @@ def load_agent(model_path, device, config=None, policy_name=None):
 
 
 def build_policy_input_adapter(agent, config, device):
-    if not policy_uses_cached_visual_features(agent.policy_name):
+    policy_name = getattr(agent, "policy_name", LEGACY_BC_POLICY_NAME)
+    if not policy_uses_cached_visual_features(policy_name):
         return None
 
     policy_kwargs = build_policy_kwargs_from_config(config)
@@ -74,6 +110,128 @@ def build_policy_input_adapter(agent, config, device):
     ).to(device)
     extractor.eval()
     return extractor
+
+
+def is_legacy_bc_agent(agent):
+    return getattr(agent, "legacy_low_dim_state_dim", None) == 8
+
+
+def legacy_bc_process_obs(obs, transform=None):
+    front_image = torch.tensor(obs.front_rgb, dtype=torch.float32).permute(2, 0, 1) / 255
+    if transform is not None:
+        front_image = transform(front_image)
+
+    low_dim_state = torch.tensor(
+        np.concatenate((obs.joint_positions, np.array([obs.gripper_open]))),
+        dtype=torch.float32,
+    )
+    return front_image, low_dim_state
+
+
+class LegacyBCDataset(Dataset):
+    def __init__(self, config, train=False, test=False, normalize=False):
+        self.root_dir = config.dataset.root_dir
+        task = config.dataset.task
+        env_id = config.dataset.env_id
+        train_split = config.dataset.train_split
+        data_path = os.path.join(
+            self.root_dir,
+            task,
+            f"env_{env_id}",
+            "episodes_observations.pkl.gz",
+        )
+
+        demos_raw_data = load_pickled_data(data_path)
+        self.normalize = normalize
+        self.action_min = torch.tensor(config.transform.action_min)
+        self.action_max = torch.tensor(config.transform.action_max)
+
+        if train:
+            demos_raw_data = demos_raw_data[: int(train_split * len(demos_raw_data))]
+        elif test:
+            demos_raw_data = demos_raw_data[int(config.dataset.test_split * len(demos_raw_data)) :]
+
+        self.transform = get_image_transform(config)
+        self.data = []
+
+        print("Loading dataset from:", data_path)
+        for demo in demos_raw_data:
+            num_steps = len(demo) - 1
+            for time_step in range(num_steps):
+                self.data.append(self._load_datapoint(demo, time_step))
+
+    def _load_datapoint(self, trajectory, time_step):
+        obs = trajectory[time_step]
+        next_obs = trajectory[time_step + 1]
+        front_image, low_dim_state = legacy_bc_process_obs(obs, self.transform)
+        action = torch.tensor(
+            np.concatenate((obs.joint_velocities, np.array([next_obs.gripper_open]))),
+            dtype=torch.float32,
+        )
+        if self.normalize:
+            action = 2 * ((action - self.action_min) / (self.action_max - self.action_min)) - 1
+        return {
+            "action": action,
+            "low_dim_state": low_dim_state,
+            "image": front_image,
+        }
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+def legacy_bc_load_environment(base_cfg, collection_cfg, idx_environment, headless=True):
+    from colosseum import TASKS_PY_FOLDER, TASKS_TTM_FOLDER
+    from colosseum.rlbench.extensions.environment import EnvironmentExt
+    from colosseum.rlbench.utils import ObservationConfigExt, name_to_class
+    from rlbench.action_modes.action_mode import MoveArmThenGripper
+    from rlbench.action_modes.arm_action_modes import JointVelocity
+    from rlbench.action_modes.gripper_action_modes import Discrete
+
+    task = name_to_class(base_cfg.env.task_name, TASKS_PY_FOLDER)
+
+    config = clone_config(base_cfg)
+    env_entries = collection_cfg.get("env_config", [])
+    env_entry = next(
+        (entry for entry in env_entries if entry.get("env_idx") == idx_environment),
+        None,
+    )
+    if env_entry is None:
+        raise ValueError(f"Environment index {idx_environment} not found in collection config")
+
+    env_factors = config.env.scene.factors
+    for variation_cfg in env_entry.get("variations_parameters", []):
+        var_type = variation_cfg["type"]
+        var_name = variation_cfg.get("name")
+        for factor_cfg in env_factors:
+            if factor_cfg.variation != var_type:
+                continue
+            if var_name is not None and "name" in factor_cfg and factor_cfg.name != var_name:
+                continue
+            for key, value in variation_cfg.items():
+                if key == "type":
+                    continue
+                factor_cfg[key] = value
+            break
+
+    data_cfg, env_cfg = config.data, config.env
+
+    rlbench_env = EnvironmentExt(
+        action_mode=MoveArmThenGripper(
+            arm_action_mode=JointVelocity(),
+            gripper_action_mode=Discrete(),
+        ),
+        obs_config=ObservationConfigExt(data_cfg),
+        headless=headless,
+        path_task_ttms=TASKS_TTM_FOLDER,
+        env_config=env_cfg,
+    )
+    rlbench_env.launch()
+    task_env = rlbench_env.get_task(task)
+    return task_env, rlbench_env
 
 
 def build_split_config(base_config, task, split, env_id):
@@ -117,10 +275,11 @@ def evaluate_offline(agent, base_config, task, split, device, batch_size, num_wo
     env_ids = build_offline_env_ids(base_config, split)
     loss_per_env = {}
     losses = []
+    dataset_cls = LegacyBCDataset if is_legacy_bc_agent(agent) else ImitationDataset
     for env_id in env_ids:
         config = build_split_config(base_config, task, split, env_id)
         loader = DataLoader(
-            ImitationDataset(config=config, train=True),
+            dataset_cls(config=config, train=True),
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
@@ -153,12 +312,20 @@ def run_live_episodes(
     with open(collection_cfg_path, "r", encoding="utf-8") as fh:
         collection_cfg = json.load(fh)
 
-    task_env, rlbench_env = load_environment(
-        base_cfg,
-        collection_cfg,
-        idx_environment,
-        headless=headless,
-    )
+    if is_legacy_bc_agent(agent):
+        task_env, rlbench_env = legacy_bc_load_environment(
+            base_cfg,
+            collection_cfg,
+            idx_environment,
+            headless=headless,
+        )
+    else:
+        task_env, rlbench_env = load_environment(
+            base_cfg,
+            collection_cfg,
+            idx_environment,
+            headless=headless,
+        )
     input_adapter = build_policy_input_adapter(agent, base_cfg, device)
     rewards = []
     max_steps = int(os.environ.get("ELSA_SIM_MAX_STEPS", "300"))
@@ -170,7 +337,10 @@ def run_live_episodes(
             steps = 0
             while not terminate and steps < max_steps:
                 with torch.no_grad():
-                    front_rgb, low_dim_state = process_obs(obs, transform)
+                    if is_legacy_bc_agent(agent):
+                        front_rgb, low_dim_state = legacy_bc_process_obs(obs, transform)
+                    else:
+                        front_rgb, low_dim_state = process_obs(obs, transform)
                     front_rgb = front_rgb.unsqueeze(0).to(device)
                     if input_adapter is not None:
                         # Convert inference-mode extractor output into a regular tensor

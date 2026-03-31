@@ -2,10 +2,11 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ELSA_ROOT="${ELSA_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-export ELSA_ENV_NAME="${ELSA_ENV_NAME:-elsa_challenge}"
-export CONDA_BASE="${CONDA_BASE:-/home/cvlab-dgx/anaconda3}"
-export COPPELIASIM_ROOT="${COPPELIASIM_ROOT:-/home/cvlab-dgx/siwon/CoppeliaSim_Player_V4_1_0_Ubuntu20_04}"
-export ELSA_RLBENCH_ROOT="${ELSA_RLBENCH_ROOT:-/home/cvlab-dgx/siwon/object_centric_diffusion/third_party/RLBench}"
+export ELSA_ENV_NAME="${ELSA_ENV_NAME:-clip310}"
+export ELSA_VENV_PATH="${ELSA_VENV_PATH:-$ELSA_ROOT/.venv}"
+export CONDA_BASE="${CONDA_BASE:-/home/cv7/miniconda3}"
+export COPPELIASIM_ROOT="${COPPELIASIM_ROOT:-/home/cv7/tools/CoppeliaSim_Edu_V4_9_0_rev6_Ubuntu20_04}"
+export ELSA_RLBENCH_ROOT="${ELSA_RLBENCH_ROOT:-/home/cv7/siwon/hdp/rlbench}"
 export ELSA_XVFB_DISPLAY="${ELSA_XVFB_DISPLAY:-:98}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
 export PYTHONUNBUFFERED=1

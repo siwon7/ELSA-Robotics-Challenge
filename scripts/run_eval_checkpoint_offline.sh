@@ -32,13 +32,25 @@ if [ -n "${ELSA_POLICY_NAME:-}" ]; then
   EXTRA_ARGS+=(--policy-name "$ELSA_POLICY_NAME")
 fi
 
-conda run -n "$ELSA_ENV_NAME" \
-  python scripts/eval_checkpoint.py \
-  --model-path "$MODEL_PATH" \
-  --task "$TASK" \
-  --device "$EVAL_DEVICE" \
-  --split "$SPLIT" \
-  --batch-size "$EVAL_BATCH_SIZE" \
-  --num-workers "$EVAL_NUM_WORKERS" \
-  "${EXTRA_ARGS[@]}" \
-  --output "$OUTPUT_JSON"
+if [ -x "$ELSA_VENV_PATH/bin/python" ]; then
+  "$ELSA_VENV_PATH/bin/python" scripts/eval_checkpoint.py \
+    --model-path "$MODEL_PATH" \
+    --task "$TASK" \
+    --device "$EVAL_DEVICE" \
+    --split "$SPLIT" \
+    --batch-size "$EVAL_BATCH_SIZE" \
+    --num-workers "$EVAL_NUM_WORKERS" \
+    "${EXTRA_ARGS[@]}" \
+    --output "$OUTPUT_JSON"
+else
+  conda run -n "$ELSA_ENV_NAME" \
+    python scripts/eval_checkpoint.py \
+    --model-path "$MODEL_PATH" \
+    --task "$TASK" \
+    --device "$EVAL_DEVICE" \
+    --split "$SPLIT" \
+    --batch-size "$EVAL_BATCH_SIZE" \
+    --num-workers "$EVAL_NUM_WORKERS" \
+    "${EXTRA_ARGS[@]}" \
+    --output "$OUTPUT_JSON"
+fi
