@@ -6,11 +6,17 @@ import torch
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context
 from federated_elsa_robotics.task import get_weights, load_data_colosseum, set_weights, train, validate_one_epoch
-from elsa_learning_agent.agent_forward_kinematics import Agent
+from federated_elsa_robotics.policy_runtime import (
+    DEFAULT_SEED,
+    build_runtime_agent,
+    get_runtime_policy_name,
+    parse_bool,
+    set_global_seed,
+)
 
 # Define Flower Client and client_fn
 class FlowerClient(NumPyClient):
-    def __init__(self, net: Agent, trainloader, valloader, local_epochs, config=None):
+    def __init__(self, net, trainloader, valloader, local_epochs, config=None):
         self.net = net
         self.trainloader = trainloader
         self.valloader = valloader
@@ -55,16 +61,22 @@ def client_fn(context: Context):
     config.dataset.dataset_task = context.run_config["dataset-task"]
     config.dataset.task = context.run_config["dataset-task"]
     config.dataset.train_split = context.run_config["train-split"]
+    policy_name = get_runtime_policy_name(context.run_config, config)
+    config.model.policy_name = policy_name
+    seed = int(context.run_config.get("seed", DEFAULT_SEED))
+    deterministic = parse_bool(context.run_config.get("deterministic-training", False))
+    set_global_seed(seed + int(partition_id), deterministic)
     
     # Load the data
     trainloader, valloader = load_data_colosseum(partition_id, num_partitions, config=config)
     sample = next(iter(trainloader))
-    agent = Agent(
-            image_channels=3,
-            low_dim_state_dim=sample["low_dim_state"].shape[1],
-            action_dim=sample["action"].shape[1],
-            image_size=(sample["image"].shape[2], sample["image"].shape[3])
-        )
+    agent = build_runtime_agent(
+        policy_name=policy_name,
+        image_size=(sample["image"].shape[2], sample["image"].shape[3]),
+        action_dim=sample["action"].shape[1],
+        low_dim_state_dim=sample["low_dim_state"].shape[1],
+        config=config,
+    )
     local_epochs = context.run_config["local-epochs"]
 
     # Return Client instance

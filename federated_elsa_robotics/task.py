@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from federated_elsa_robotics.policy_runtime import trim_low_dim_state
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.agent_forward_kinematics import Agent
 
@@ -29,7 +30,7 @@ def train_one_epoch(agent: Agent, train_loader, optimizer, criterion, epoch, dev
     total_loss = 0.0
     for batch in train_loader:
         image = batch["image"].to(device)
-        low_dim_state = batch["low_dim_state"].to(device)
+        low_dim_state = trim_low_dim_state(agent, batch["low_dim_state"].to(device))
         action = batch["action"].to(device)
 
         optimizer.zero_grad()
@@ -51,7 +52,7 @@ def validate_one_epoch(agent:Agent, val_loader, device):
     with torch.no_grad():
         for batch in val_loader:
             image = batch["image"].to(device)
-            low_dim_state = batch["low_dim_state"].to(device)
+            low_dim_state = trim_low_dim_state(agent, batch["low_dim_state"].to(device))
             action = batch["action"].to(device)
 
             predicted_action = agent.get_action(image, low_dim_state)

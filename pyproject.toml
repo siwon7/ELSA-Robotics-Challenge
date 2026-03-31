@@ -54,6 +54,9 @@ dataset-config-path="dataset_config.yaml"
 
 # Task to be learned by the model
 dataset-task= "close_box"
+policy-name = "fk_camera_object"
+seed = 0
+deterministic-training = false
 
 # Samples per client
 train-split= 0.9

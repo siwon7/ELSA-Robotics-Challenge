@@ -2,12 +2,18 @@
 
 from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+from federated_elsa_robotics.policy_runtime import (
+    DEFAULT_SEED,
+    build_runtime_agent,
+    get_runtime_policy_name,
+    parse_bool,
+    set_global_seed,
+)
 from federated_elsa_robotics.strategies import build_strategy
 from federated_elsa_robotics.task import get_weights, set_weights, validate_one_epoch
 from omegaconf import OmegaConf
 import torch
 
-from elsa_learning_agent.agent_forward_kinematics import Agent
 from elsa_learning_agent.kinematics import LOW_DIM_STATE_DIM
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 
@@ -22,7 +28,7 @@ def gen_evaluate_fn(
 
     def evaluate(server_round, parameters_ndarrays, config):
         """Evaluate global model on centralized test set."""
-        agent = Agent(**net_args)
+        agent = build_runtime_agent(**net_args)
         set_weights(agent, parameters_ndarrays)
         agent.policy.to(device)
 
@@ -76,21 +82,28 @@ def server_fn(context: Context):
     dataset_config_path = context.run_config["dataset-config-path"]
     strategy_name = context.run_config["strategy-name"]
     conf = OmegaConf.load(dataset_config_path)
+    policy_name = get_runtime_policy_name(context.run_config, conf)
+    conf.model.policy_name = policy_name
+    seed = int(context.run_config.get("seed", DEFAULT_SEED))
+    deterministic = parse_bool(context.run_config.get("deterministic-training", False))
+    set_global_seed(seed, deterministic)
     print(
         f"Starting server with strategy={strategy_name}, "
+        f"policy={policy_name}, "
         f"l-ep={context.run_config['local-epochs']}, "
         f"ts={context.run_config['train-split']}, fclients={fraction_fit}"
     )
 
     net_args = {
-        "image_channels": 3,
-        "low_dim_state_dim": LOW_DIM_STATE_DIM,
-        "action_dim": 8,
+        "policy_name": policy_name,
         "image_size": (128, 128),
+        "action_dim": 8,
+        "low_dim_state_dim": LOW_DIM_STATE_DIM,
+        "config": conf,
     }
 
     # Initialize model parameters
-    agent = Agent(**net_args)
+    agent = build_runtime_agent(**net_args)
     ndarrays = get_weights(agent)
     parameters = ndarrays_to_parameters(ndarrays)
 
