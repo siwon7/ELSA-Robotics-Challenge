@@ -1,64 +1,61 @@
 """elsa-robotics: A Flower / PyTorch app."""
 
-from flwr.common import Context, ndarrays_to_parameters
+from flwr.common import Context, Scalar, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+from flwr.server.client_proxy import ClientProxy
+from flwr.server.strategy import FedAvg
+from pathlib import Path
 from federated_elsa_robotics.strategies import SaveModelStrategy
-from federated_elsa_robotics.task import get_weights, set_weights, validate_one_epoch
+from federated_elsa_robotics.task import (
+    get_weights,
+    infer_action_dim,
+    set_weights,
+)
 from omegaconf import OmegaConf
 import torch
-from torch.utils.data import DataLoader
+from typing import Optional, Union
 
 from elsa_learning_agent.agent import Agent
-from federated_elsa_robotics.eval_model import online_evaluation
-from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
-from elsa_learning_agent.utils import get_image_transform
-
-def gen_evaluate_fn(
-    testloader: list[ImitationDataset],
-    device: torch.device,
-    net_args: dict,
-    simulator: bool = False,
-    dataset_config: dict = None,
-):
-    """Generate the function for centralized evaluation."""
-
-    def evaluate(server_round, parameters_ndarrays, config):
-        """Evaluate global model on centralized test set."""
-        agent = Agent(**net_args)
-        set_weights(agent, parameters_ndarrays)
-        agent.policy.to(device)
-
-        metrics = {}
-
-        total_loss = 0.0
-        metrics["loss_per_env"] = {}
-        for idx, dataset in enumerate(testloader):
-            loss = validate_one_epoch(agent, dataset, device=device)
-            total_loss += loss
-            metrics["loss_per_env"][dataset_config.dataset["test_env_idx_range"][0] + idx] = loss
-        
-        loss = total_loss / len(testloader)
-
-        if simulator:
-            # Load base config from dataset yaml
-            base_cfg = OmegaConf.load(dataset_config.dataset["root_dir"] + f"/{dataset_config.dataset['task']}/{dataset_config.dataset['task']}_fed.yaml")
-            base_cfg.dataset = dataset_config.dataset
-            base_cfg.transform = dataset_config.transform
-
-            metrics["avg_reward"] = 0.0
-            metrics["video_array"] = []
-            for idx_evaluate in dataset_config.dataset["test_live_idxs"]:                
-                # Perform online evaluation
-                avg_reward, video_array = online_evaluation(agent, device, get_image_transform(dataset_config), base_cfg, idx_evaluate, dataset_config.dataset["num_episodes_live"])
-                metrics["avg_reward"] += avg_reward
-                metrics["video_array"].append(video_array)
-            metrics["avg_reward"] /= len(dataset_config.dataset["test_live_idxs"])
-            
-        return loss, metrics
-
-    return evaluate
+from elsa_learning_agent.config_validation import validate_runtime_config
+from elsa_learning_agent.utils import get_action_output_activation
+from federated_elsa_robotics.fl_method_registry import resolve_prox_mu
 
 
+class TrainableOnlySaveModelStrategy(SaveModelStrategy):
+    """Save strategy compatible with trainable-only aggregation."""
+
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: list[tuple[ClientProxy, object]],
+        failures: list[Union[tuple[ClientProxy, object], BaseException]],
+    ) -> tuple[Optional[object], dict[str, Scalar]]:
+        aggregated_parameters, aggregated_metrics = FedAvg.aggregate_fit(
+            self,
+            server_round,
+            results,
+            failures,
+        )
+
+        if aggregated_parameters is not None:
+            print(f"Saving round {server_round} aggregated_parameters...")
+            aggregated_ndarrays = parameters_to_ndarrays(aggregated_parameters)
+            set_weights(self.agent, aggregated_ndarrays)
+
+            path = Path.joinpath(self.save_path, f"{self.save_name}_round_{server_round}.pth")
+            torch.save(self.agent.policy.state_dict(), path)
+
+            if self.use_wandb:
+                import wandb
+
+                wandb.log(
+                    {
+                        "server_round": server_round,
+                        "federated_training_loss": aggregated_metrics["train_loss"],
+                    }
+                )
+
+        return aggregated_parameters, aggregated_metrics
 def train_aggregation_fn(metrics: list[dict]):
     """Aggregate training metrics."""
     losses = [num_samples * m["train_loss"] for num_samples, m in metrics]
@@ -71,16 +68,37 @@ def server_fn(context: Context):
     fraction_fit = context.run_config["fraction-fit"]
     fraction_evaluate = context.run_config["fraction-eval"]
     server_device = context.run_config["server-device"]
+    client_device = context.run_config["client-device"]
     use_wandb = context.run_config["use-wandb"]
+    wandb_project = context.run_config["wandb-project"]
+    checkpoint_root = context.run_config["checkpoint-root"]
+    run_tag = context.run_config["run-tag"]
     dataset_config_path = context.run_config["dataset-config-path"]
+    prox_mu_override = context.run_config.get("prox-mu", "")
     conf = OmegaConf.load(dataset_config_path)
-    print(f"Starting server with l-ep={context.run_config["local-epochs"]}, ts={context.run_config["train-split"]}, fclients={fraction_fit}")
+    conf.model.prox_mu = resolve_prox_mu(conf, explicit_override=prox_mu_override)
+    validation_summary = validate_runtime_config(conf)
+    print(
+        f"Starting server with l-ep={context.run_config['local-epochs']}, "
+        f"ts={context.run_config['train-split']}, fclients={fraction_fit}, "
+        f"prox_mu={conf.model.prox_mu}, fl={validation_summary['federated_method_preset']}"
+    )
+    conf.dataset.action_dim = infer_action_dim(conf)
 
     net_args = {
         "image_channels": 3,
         "low_dim_state_dim": 8,
-        "action_dim": 8,
+        "action_dim": int(conf.dataset.action_dim),
         "image_size": (128, 128),
+        "vision_backbone": str(getattr(conf.model, "vision_backbone", "cnn")),
+        "projector_dim": int(getattr(conf.model, "projector_dim", 256)),
+        "action_output_activation": get_action_output_activation(conf),
+        "normalize_branch_embeddings": bool(
+            getattr(conf.model, "normalize_branch_embeddings", False)
+        ),
+        "low_dim_dropout_prob": float(
+            getattr(conf.model, "low_dim_dropout_prob", 0.0) or 0.0
+        ),
     }
 
     # Initialize model parameters
@@ -99,23 +117,28 @@ def server_fn(context: Context):
         cur_config.dataset.train_split = context.run_config["train-split"]
         cur_config.dataset.num_server_rounds = num_rounds
         cur_config.dataset.local_epochs = context.run_config["local-epochs"]
+        cur_config.dataset.action_dim = infer_action_dim(cur_config)
+        cur_config.model.prox_mu = float(conf.model.prox_mu)
         return cur_config
     config = create_config(0)
-    # test_dataset = [
-    #         DataLoader(ImitationDataset(config=create_config(idx), test=True), batch_size=config.dataset["batch_size"], shuffle=False, num_workers=config.dataset["num_workers_server"])
-    #     for idx in range(*config.dataset["test_env_idx_range"])]
-    
-    # Define strategy
-    strategy = SaveModelStrategy(
+    config.runtime = {
+        "server_device": server_device,
+        "client_device": client_device,
+        "wandb_project": wandb_project,
+        "checkpoint_root": checkpoint_root,
+        "run_tag": run_tag,
+        "prox_mu": float(conf.model.prox_mu),
+    }
+
+    strategy = TrainableOnlySaveModelStrategy(
         fraction_fit=fraction_fit,
         fraction_evaluate=fraction_evaluate,
         min_available_clients=2,
         initial_parameters=parameters,
         agent=agent,
+        save_path=Path(checkpoint_root),
         config=config,
         use_wandb=use_wandb,
-        # evaluate_fn=gen_evaluate_fn(test_dataset, server_device, net_args, simulator=config.dataset["enable_live_eval"], dataset_config=config),
-        # evaluate_metrics_aggregation_fn=
         fit_aggregation_fn=train_aggregation_fn,
     )
     config = ServerConfig(num_rounds=num_rounds)

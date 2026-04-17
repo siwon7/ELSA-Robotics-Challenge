@@ -1,15 +1,11 @@
 import os
-import hydra
-import numpy as np
+
 import torch
-import matplotlib.pyplot as plt
-from torchvision import transforms
-from tqdm import tqdm
 from torch.utils.data import Dataset
-from omegaconf import DictConfig
-from omegaconf import OmegaConf
-from elsa_learning_agent.utils import process_obs, normalize_action, get_image_transform
-from colosseum.rlbench.datacontainer import DataContainer
+from tqdm import tqdm
+
+from elsa_learning_agent.utils import get_image_transform
+from elsa_learning_agent.dataset.compat import load_pickled_data
 
 
 class EvalImitationDataset(Dataset):
@@ -19,8 +15,7 @@ class EvalImitationDataset(Dataset):
         env_id = config.dataset.env_id
         data_path = os.path.join(self.root_dir, f"{task}", f"env_{env_id}", "episodes_observations.pkl.gz")
         
-        datacontainer = DataContainer()
-        obs_raw_data = datacontainer.load(data_path)["data"]
+        obs_raw_data = load_pickled_data(data_path)
 
         self.transform = get_image_transform(config)
         self.data = []
@@ -48,52 +43,3 @@ class EvalImitationDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
-
-def main():
-    # Manually set the config directory outside the script folder
-    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../configs"))
-
-    # Ensure Hydra finds the external config directory
-    @hydra.main(config_path=config_path, config_name="config", version_base=None)
-    def run(config: DictConfig):
-        print("Loaded Configuration:")
-        print(OmegaConf.to_yaml(config))  # Print config for debugging
-
-        dataset = EvalImitationDataset(config, test=True)
-        print("Dataset size:", len(dataset))
-        sample = dataset[0]
-
-        # Plot sample image
-        print("Low-Dim Data:", sample["low_dim_state"])
-        print("Image shape:", sample["image"].shape)
-
-        # plot the image
-        # inverse normalization
-        sample["image"] = (sample["image"] * 0.5) + 0.5
-        plt.imshow(sample["image"].permute(1, 2, 0).numpy())
-        plt.show()
-
-        # compute mean and std of the dataset for the images for normalization
-        mean = 0.
-        std = 0.
-        nb_samples = 0.
-
-        for sample in dataset:
-            image = sample["image"]
-            batch_samples = image.size(0)
-            image = image.view(3, -1)
-            mean += image.mean(1)
-            std += image.std(1)
-            nb_samples += batch_samples
-
-        mean /= nb_samples
-        std /= nb_samples
-
-        print("Mean:", mean)
-        print("Std:", std)
-
-    run()  # Call the Hydra-wrapped function
-
-
-if __name__ == "__main__":
-    main()

@@ -4,9 +4,26 @@ dataset:
   root_test_dir: ./datasets/test
   env_id: 0
   env_id_test: 0
+  # Action pipeline preset:
+  # - legacy_auto: keep old explicit fields / backward compatible
+  # - joint_velocity_direct: train JV, execute RLBench/Colosseum JV directly
+  # - joint_position_to_benchmark_joint_velocity_servo:
+  #     train joint position, execute through JV servo adapter
+  # - joint_position_direct: train joint position, execute JointPosition directly
+  action_pipeline_preset: legacy_auto
+  # Leave as auto when using action_pipeline_preset.
+  action_representation: auto
+  execution_action_interface: auto
+  execution_action_adapter: auto
+  # Only used by joint_position_to_benchmark_joint_velocity_servo.
+  joint_velocity_servo_gain: 20.0
+  joint_velocity_servo_clip: 1.0
+  joint_velocity_servo_steps: 2
+  joint_velocity_servo_tolerance: 0.01
   
   # Eval split for client
   test_split: 0.9
+  train_split: 0.9
   batch_size: 32
   num_workers: 4
   num_workers_server: 32
@@ -34,6 +51,15 @@ model:
   weight_decay: 1.0e-05
   epochs: -1
   optimizer: adam
+  vision_backbone: cnn
+  projector_dim: 256
+  action_output_activation: ""
+  normalize_branch_embeddings: false
+  low_dim_dropout_prob: 0.0
+federated:
+  # legacy_auto | fedavg | fedprox | fedprox_visual_shift
+  method_preset: fedprox_visual_shift
+  prox_mu: 0.001
 constants:
   LEFT_SHOULDER_RGB_FOLDER: left_shoulder_rgb
   LEFT_SHOULDER_DEPTH_FOLDER: left_shoulder_depth

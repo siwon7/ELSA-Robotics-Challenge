@@ -1,0 +1,207 @@
+Stage 1
+
+                 Stage 1: Frozen DINO CLS Cache + Head-Only FL
+
+  Offline preprocessing
+    front RGB x
+      -> frozen DINOv2-style ViT
+      -> CLS feature c
+      -> cache per sample
+
+  Federated training / inference
+    cached CLS feature c
+    low-dim state s = [joint7, ee_pos3, ee_rot6d6, gripper1]
+
+         c ----------------------+
+                                 |
+                                 v
+                        +------------------+
+                        | visual proj head |
+                        +--------+---------+
+                                 |
+                                 v
+                           visual embedding
+
+    s -> FK / state encoders -> state embedding S
+
+          [ visual embedding ; S ]
+                    |
+                    v
+             +-------------+
+             | MLP policy  |
+             +------+------+
+                    |
+                    v
+               tanh action a
+
+  Output
+    a = [joint velocity 7, gripper 1]
+
+  Training
+    main supervision: action RMSE
+    no LoRA
+    no online backbone update
+    no image-side consistency/adaptor losses
+    FL aggregates head parameters only
+
+Figure Caption
+Architecture of the Stage 1 cached-head baseline. A frozen DINOv2-style backbone extracts a CLS feature from the front RGB image offline and stores it in a cache. During federated training, only the lightweight policy head consumes the cached visual feature together with the FK-derived robot state to predict the 8-dimensional action vector.
+
+
+Stage 2
+
+                 Stage 2: Frozen DINO + Query/Object Policy (No LoRA)
+
+  Input
+    front RGB x
+    low-dim state s = [joint7, ee_pos3, ee_rot6d6, gripper1]
+
+  front RGB x                              low-dim state s
+      |                                           |
+      v                                           v
+  +-------------------+                   +----------------------+
+  | resize + norm     |                   | FK / State Encoders  |
+  +---------+---------+                   +----------+-----------+
+            |                                        |
+            v                                        v
+  +------------------------------------+      state embedding S
+  | Frozen DINOv2-style ViT backbone   |              |
+  | no LoRA                            |              |
+  +------------------+-----------------+              |
+                     |                                |
+              +------+-------+                        |
+              |              |                        |
+              v              v                        |
+           cls token C   patch tokens P              |
+                     \      |                        /
+                      \     |                       /
+                       \    v                      /
+                        +--------------------------+
+                        | View / Camera Adaptor    |
+                        | input: [C ; S]           |
+                        | output: V, gamma, beta,  |
+                        |         du,dv, qr, qo    |
+                        +------------+-------------+
+                                     |
+                     +---------------+----------------+
+                     |                                |
+                     v                                v
+          FiLM-like modulation on P          coord shift on P
+          P <- P*(1+0.1*gamma)+0.1*beta      P <- P + pos(du,dv)
+                     \                                /
+                      \                              /
+                       +-------------+--------------+
+                                     |
+                                     v
+                               adapted patches P*
+
+                        +-----------------------------+
+                        | Query Token Extractor       |
+                        | robot/object queries -> P*  |
+                        +-------------+---------------+
+                                      |
+                    +-----------------+-----------------+
+                    |                                   |
+                    v                                   v
+               robot token R                     object tokens O1..Ok
+
+              [ global visual ; object tokens ; S ; V ]
+                                |
+                                v
+                         +-------------+
+                         | MLP policy  |
+                         +------+------+
+                                |
+                                v
+                           tanh action a
+
+Figure Caption
+Architecture of the Stage 2 frozen-query baseline. A frozen DINOv2-style backbone extracts a global token and patch tokens from the front RGB image. Conditioned on the FK state embedding, a view adaptor predicts feature modulation and query priors, and the adapted patch tokens are parsed into robot and object-centric tokens for action prediction.
+
+
+Stage 3
+
+                 Stage 3: LoRA-Adapted FK-ObjView Adapter Policy
+
+  Input
+    front RGB x
+    low-dim state s = [joint7, ee_pos3, ee_rot6d6, gripper1]
+
+  front RGB x                              low-dim state s
+      |                                           |
+      v                                           v
+  +-------------------+                   +----------------------+
+  | resize + norm     |                   | FK / State Encoders  |
+  +---------+---------+                   +----------+-----------+
+            |                                        |
+            v                                        v
+  +----------------------------------------------+   |
+  | DINOv2-style ViT backbone                    |   |
+  | LoRA on last attention blocks only           |   |
+  +-------------------+--------------------------+   |
+                      |                              |
+             +--------+--------+                     |
+             |                 |                     |
+             v                 v                     |
+         cls token C       patch tokens P           |
+                      \      |                     /
+                       \     |                    /
+                        \    v                   /
+                         +----------------------+
+                         | View / Camera        |
+                         | Adaptor              |
+                         | input: [C ; S]       |
+                         | output: V, gamma,    |
+                         | beta, du,dv, qr, qo  |
+                         +----------+-----------+
+                                    |
+                  +-----------------+------------------+
+                  |                                    |
+                  v                                    v
+       FiLM-like modulation on P              coord shift on P
+                  \                                    /
+                   \                                  /
+                    +---------------+----------------+
+                                    |
+                                    v
+                             adapted patches P*
+
+                       +-------------------------------+
+                       | Query Token Extractor         |
+                       | robot/object cross-attention  |
+                       +---------------+---------------+
+                                       |
+                     +-----------------+-----------------+
+                     |                                   |
+                     v                                   v
+                robot token R                     object tokens O1..Ok
+
+             [ global visual ; object tokens ; FK state ; view code ]
+                                   |
+                                   v
+                            +-------------+
+                            | MLP policy  |
+                            +------+------+
+                                   |
+                                   v
+                              tanh action a
+
+  Training losses
+    main supervision: action RMSE
+    robot token <-> FK projection      : alignment loss
+    object tokens among themselves     : diversity loss
+    weak/strong views                  : action/feature consistency
+    camera shift / modulation          : regularization
+
+Figure Caption
+Architecture of the full LoRA-adapted FK-ObjView Adapter Policy. Compared with Stage 2, the final model enables lightweight adaptation of the last ViT attention blocks through LoRA, while retaining FK-conditioned view adaptation and query-based object tokenization for robust front-view manipulation.
+
+
+Interpretation
+
+- Stage 1 is the fastest baseline.
+- Stage 2 restores part of the representational capacity while keeping the backbone frozen.
+- Stage 3 is the highest-capacity version aimed at final performance.
+
+- Stage 1 should be interpreted mainly as a representation-limited baseline rather than a round-limited one.
+- In our experiments, Stage 1 reached a reasonable offline RMSE but still showed weak online success rate, suggesting that increasing the number of rounds alone is unlikely to close the full performance gap.

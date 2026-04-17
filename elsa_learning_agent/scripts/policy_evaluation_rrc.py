@@ -1,39 +1,73 @@
 import signal
 import sys
-import torch
 import os
-import numpy as np
-import pickle
-from omegaconf import DictConfig, OmegaConf
-import hydra
-from colosseum import (
-    ASSETS_CONFIGS_FOLDER,
-)
+import torch
+
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.config_utils import load_runtime_config
 from elsa_learning_agent.dataset.dataset_loader_eval import EvalImitationDataset
-from elsa_learning_agent.utils import denormalize_action
+from elsa_learning_agent.utils import (
+    denormalize_action,
+    get_action_output_activation,
+    get_execution_action_adapter,
+    get_execution_action_interface,
+    get_joint_velocity_servo_clip,
+    get_joint_velocity_servo_gain,
+    select_receding_horizon_action,
+)
 from torch.utils.data import DataLoader
 import json
 from tqdm import tqdm
-import argparse
 
-def validate_one_epoch(agent, val_loader, cfg, task):
+from federated_elsa_robotics.task import infer_action_dim
+
+
+def _adapt_to_submission_action(predicted_action, current_low_dim_state, cfg):
+    action = select_receding_horizon_action(predicted_action, cfg)
+    action = denormalize_action(
+        action.detach().cpu(),
+        torch.tensor(cfg.transform.action_min),
+        torch.tensor(cfg.transform.action_max),
+    )
+
+    execution_interface = str(get_execution_action_interface(cfg))
+    execution_adapter = str(get_execution_action_adapter(cfg))
+    if (
+        execution_interface == "joint_velocity"
+        and execution_adapter == "joint_position_to_joint_velocity_servo"
+    ):
+        target_joint_positions = action[:7]
+        current_joint_positions = current_low_dim_state[:7].detach().cpu()
+        servo_gain = float(get_joint_velocity_servo_gain(cfg))
+        servo_clip = float(get_joint_velocity_servo_clip(cfg))
+        joint_velocity = torch.clamp(
+            servo_gain * (target_joint_positions - current_joint_positions),
+            min=-servo_clip,
+            max=servo_clip,
+        )
+        return torch.cat((joint_velocity, action[7:8]), dim=0)
+    return action
+
+
+def validate_one_epoch(agent, val_loader, cfg, task, device):
     agent.eval()
     predicted_actions= {f"{task}": []}
-    image_counter = 0
     with torch.no_grad():
         for batch in tqdm(val_loader):
-            image = batch["image"].to("cuda")
-            low_dim_state = batch["low_dim_state"].to("cuda")
+            image = batch["image"].to(device)
+            low_dim_state = batch["low_dim_state"].to(device)
             obs_ids = batch["obs_id"]
 
             predicted_action = agent.get_action(image, low_dim_state)
 
             for idx, action in enumerate(predicted_action):
-                denormalized_action = denormalize_action(action.detach().cpu(), torch.tensor(cfg.transform.action_min), torch.tensor(cfg.transform.action_max))
-                datapoint = {"action_id": int(obs_ids[idx]),  "action": denormalized_action.numpy().tolist()}
+                submission_action = _adapt_to_submission_action(
+                    action,
+                    low_dim_state[idx],
+                    cfg,
+                )
+                datapoint = {"action_id": int(obs_ids[idx]),  "action": submission_action.numpy().tolist()}
                 predicted_actions[f"{task}"].append(datapoint)
-                image_counter += 1
 
 
     return predicted_actions
@@ -54,9 +88,7 @@ def main(model_paths, model_config_path, predictions_path) -> int:
             sys.exit(2)
         else:
 
-            model_cfg = OmegaConf.load(model_config_path)
-            model_cfg.dataset.dataset_task = task
-            model_cfg.dataset.task = task
+            model_cfg = load_runtime_config(model_config_path, task=task)
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -64,13 +96,27 @@ def main(model_paths, model_config_path, predictions_path) -> int:
 
             dataset = EvalImitationDataset(model_cfg, train=False, test=True)
             # Important not to shuffle the data
-            dataloader = DataLoader(dataset, batch_size=model_cfg.dataset.batch_size, shuffle=True)
+            dataloader = DataLoader(
+                dataset,
+                batch_size=model_cfg.dataset.batch_size,
+                shuffle=False,
+                num_workers=int(getattr(model_cfg.dataset, "num_workers", 0) or 0),
+            )
 
             agent = Agent(
                 image_channels=3,
                 low_dim_state_dim=8,
-                action_dim=8,
-                image_size=(128,128)
+                action_dim=int(infer_action_dim(model_cfg)),
+                image_size=(128,128),
+                vision_backbone=str(getattr(model_cfg.model, "vision_backbone", "cnn")),
+                projector_dim=int(getattr(model_cfg.model, "projector_dim", 256)),
+                action_output_activation=get_action_output_activation(model_cfg),
+                normalize_branch_embeddings=bool(
+                    getattr(model_cfg.model, "normalize_branch_embeddings", False)
+                ),
+                low_dim_dropout_prob=float(
+                    getattr(model_cfg.model, "low_dim_dropout_prob", 0.0) or 0.0
+                ),
             )
             agent.policy.to(device)
 
@@ -78,7 +124,7 @@ def main(model_paths, model_config_path, predictions_path) -> int:
             agent.load_state_dict(model_path)
 
             print("Starting evaluation...")
-            predctions = validate_one_epoch(agent, dataloader, model_cfg, task)
+            predctions = validate_one_epoch(agent, dataloader, model_cfg, task, device)
 
             all_predictions["data"][task] = predctions[task]
 

@@ -12,6 +12,13 @@ import wandb
 from elsa_learning_agent.agent import Agent
 
 
+def normalize_run_tag(raw_tag) -> str:
+    tag = str(raw_tag or "").strip()
+    if not tag:
+        return ""
+    return tag.replace(" ", "-")
+
+
 class SaveModelStrategy(FedAvg):
     def __init__(
         self,
@@ -19,7 +26,7 @@ class SaveModelStrategy(FedAvg):
         fraction_evaluate: float = 1.0,
         min_available_clients: int = 2,
         initial_parameters = None,
-        agent: Agent = Agent(),
+        agent: Optional[Agent] = None,
         save_path: Path = Path("model_checkpoints"),
         config: Optional[OmegaConf] = None,
         use_wandb: bool = False,
@@ -38,17 +45,32 @@ class SaveModelStrategy(FedAvg):
             evaluate_metrics_aggregation_fn=evaluate_metrics_aggregation_fn,
             fit_metrics_aggregation_fn=fit_aggregation_fn,
         )
+        if agent is None:
+            raise ValueError("SaveModelStrategy requires an initialized Agent instance.")
         self.agent = agent
-        self.save_name = f"{agent.policy.__class__.__name__}_l-ep_{config.dataset["local_epochs"]}_ts_{config.dataset["train_split"]}_fclients_{fraction_fit}"
+        runtime_cfg = config.get("runtime", {}) if config is not None else {}
+        run_tag = normalize_run_tag(runtime_cfg.get("run_tag", ""))
+        self.wandb_project = runtime_cfg.get("wandb_project", "BCPolicy-Training")
+        name_parts = [
+            agent.policy.__class__.__name__,
+            f"l-ep_{config.dataset['local_epochs']}",
+            f"ts_{config.dataset['train_split']}",
+            f"fclients_{fraction_fit}",
+        ]
+        if run_tag:
+            name_parts.append(run_tag)
+        self.save_name = "_".join(name_parts)
         # Chkpt/task/wandbName
         self.save_path = Path.joinpath(save_path, config.dataset["task"])
         self.save_path.mkdir(parents=True, exist_ok=True)
         self.use_wandb = use_wandb
+        config_snapshot_path = Path.joinpath(self.save_path, f"{self.save_name}.config.yaml")
+        OmegaConf.save(config, config_snapshot_path)
 
         if self.use_wandb:
             if resume:
                 wandb.init(
-                    project="BCPolicy-Training",  # Replace with your project name
+                    project=self.wandb_project,
                     # name=f"{base_cfg.dataset.task}_bc_env{idx_environment}_{train_split}",       # Replace with a run name
                     name=f"{config.dataset['task']}_{self.save_name}",
                     id="run-20250226_101133-uoligt1l",
@@ -65,7 +87,7 @@ class SaveModelStrategy(FedAvg):
                 )
             else:
                 wandb.init(
-                    project="BCPolicy-Training",  # Replace with your project name
+                    project=self.wandb_project,
                     # name=f"{base_cfg.dataset.task}_bc_env{idx_environment}_{train_split}",       # Replace with a run name
                     name=f"{config.dataset['task']}_{self.save_name}",
                     config={
@@ -164,4 +186,3 @@ class SaveModelStrategy(FedAvg):
                     })
 
         return fed_eval_loss, fed_eval_metrics
-

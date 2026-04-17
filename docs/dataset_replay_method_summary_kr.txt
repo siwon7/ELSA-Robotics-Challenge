@@ -1,0 +1,186 @@
+제목: ELSA dataset 포맷 기반 replay command mapping 정리
+
+작성일:
+- 2026-04-11
+
+목적:
+- 현재 dataset observation 포맷에 들어 있는 값들만 가지고
+  어떤 command 해석 방식이면 live simulator에서 성공 trajectory를
+  reproduce할 수 있는지 정리한다.
+
+중요한 전제:
+- 아래에서 "현재 포맷만으로 가능"은 command를 만드는 데 필요한 값이
+  현재 observation 포맷 안에 이미 있다는 뜻이다.
+- 즉 joint_positions, joint_velocities, gripper_open만으로 계산 가능하다는 뜻이다.
+- 다만 exact same episode를 다시 여는 문제는 별개다.
+- exact same scenario replay에는 random_seed sidecar가 여전히 필요하다.
+- 즉 이 문서는 "현재 포맷으로 어떤 action semantics가 맞는가"를 다룬다.
+
+평가 범위:
+- 기본 비교 범위는 env 0,1 x 5 demos = 총 10 replay pack
+- 예외:
+  - DenseGrip-ObsJV는 insert에서만 작은 smoke에서 확인됨
+  - scoop 일부 JV 계열 값은 기존 10-pack set으로 측정됨
+
+방법 정의:
+
+1. ObsJV-Direct
+- command = obs.joint_velocities + next_obs.gripper_open
+- 현재 baseline이 가장 가깝게 쓰는 해석이다.
+- action mode는 JointVelocity + Discrete gripper
+
+2. PosFD-Vel
+- command = (next_joint_positions - current_joint_positions) / dt + next_obs.gripper_open
+- 현재 포맷의 joint_positions로 velocity command를 역산하는 방식이다.
+- action mode는 JointVelocity + Discrete gripper
+
+3. AbsJointPos
+- command = next_joint_positions + next_obs.gripper_open
+- absolute next joint state를 직접 목표로 넣는 방식이다.
+- action mode는 JointPosition + Discrete gripper
+
+4. ObsJV-HoldK
+- ObsJV-Direct를 한 step이 아니라 K step 유지하는 방식이다.
+- 여기 표에서는 K=3을 썼다.
+
+5. ObsJV-ControlLoop
+- ObsJV-Direct를 control loop enabled 상태로 실행한다.
+
+6. PosFD-ControlLoop
+- PosFD-Vel을 control loop enabled 상태로 실행한다.
+
+7. TargetJV-Captured
+- live demo 수집 시 robot.arm.get_joint_target_velocities()를 따로 캡처해 replay한다.
+- 현재 dataset observation 포맷만으로는 불가능하고, 추가 logging이 필요하다.
+
+8. DenseGrip-ObsJV
+- ObsJV-Direct와 동일한 joint velocity 해석을 쓰되,
+  data collection 시 record_gripper_closing=1로 gripper closing/opening
+  intermediate step까지 더 촘촘히 저장한 경우다.
+- 현재 dataset 원본 포맷만으로는 불가능하고, 추가 logging이 필요하다.
+
+측정 결과 표:
+
+| Method | 현재 포맷만 | close_box | slide_block_to_target | insert_onto_square_peg | scoop_with_spatula |
+|---|---|---|---|---|---|
+| ObsJV-Direct | O | 1.0 | 1.0 | 0.0 | 0.2 |
+| PosFD-Vel | O | 1.0 | 1.0 | 0.0 | 0.1 |
+| AbsJointPos | O | 1.0 | 1.0 | 0.8 | 0.9 |
+| ObsJV-HoldK (K=3) | O | 0.2 | 0.0 | 0.0 | 0.0 |
+| ObsJV-ControlLoop | O | 0.0 | 0.0 | 0.0 | 0.0 |
+| PosFD-ControlLoop | O | 0.0 | 0.0 | 0.0 | 0.0 |
+| TargetJV-Captured | X | 0.0 | 0.0 | 0.0 | 0.0 |
+| DenseGrip-ObsJV | X | 0.4 | 1.0 | 0.1 | 0.2 |
+
+해석:
+
+close_box
+- 현재 dataset 포맷만으로 replay하려면
+  ObsJV-Direct, PosFD-Vel, AbsJointPos 셋 다 잘 된다.
+- HoldK나 control loop는 오히려 성능을 깬다.
+
+slide_block_to_target
+- close_box와 비슷하다.
+- ObsJV-Direct, PosFD-Vel, AbsJointPos가 모두 잘 된다.
+- 특히 baseline에 가장 가까운 ObsJV-Direct도 1.0이다.
+- HoldK나 control loop는 도움이 안 된다.
+
+insert_onto_square_peg
+- plain JV 계열로는 broad run에서 재현이 안 된다.
+- 그런데 AbsJointPos는 0.8까지 올라간다.
+- 즉 insert는 velocity command보다 absolute joint-position target이 훨씬 맞는 편이다.
+- DenseGrip-ObsJV를 broad run env 0,1 x 5 demos로 다시 재면
+  close_box=0.4, slide=1.0, insert=0.1, scoop=0.2이다.
+- 즉 record_gripper_closing=1 같은 dense intermediate step 기록이
+  일부 task에는 도움을 주지만, 모든 task를 해결하진 않는다.
+
+scoop_with_spatula
+- JV 계열은 거의 안 맞는다.
+- best는 AbsJointPos 0.9이다.
+- 즉 scoop은 현재 dataset 포맷에서 joint-position semantics가 가장 잘 맞는다.
+
+현재 포맷만으로 가능한 것:
+- ObsJV-Direct
+- PosFD-Vel
+- AbsJointPos
+- ObsJV-HoldK
+- ObsJV-ControlLoop
+- PosFD-ControlLoop
+
+추가 수집/추가 logging이 필요한 것:
+- TargetJV-Captured
+  - live collection 시 target joint velocity를 따로 저장해야 한다.
+- DenseGrip-ObsJV
+  - record_gripper_closing=1로 gripper actuation intermediate step을 저장해야 한다.
+
+현재 가장 합리적인 task-aware mapping:
+- close_box: AbsJointPos 또는 ObsJV-Direct
+- slide_block_to_target: AbsJointPos 또는 ObsJV-Direct
+- insert_onto_square_peg: DenseGrip-ObsJV보다 DenseGrip + AbsJointPos가 더 좋고, broad run에서 1.0
+- scoop_with_spatula: AbsJointPos가 best이고 현재 broad run best는 0.9
+
+보수적으로 한 줄 결론:
+- 단일 JV-like mapping 하나로 4개 task를 전부 안정적으로 재현하는 것은 아직 아니다.
+- 그러나 현재 dataset 포맷만 가지고도
+  close_box, slide, insert, scoop 모두에 대해
+  task별로는 맞는 command semantics를 찾을 수 있다.
+- 가장 중요한 분기점은:
+  - close/slide는 JV도 된다.
+  - insert/scoop은 absolute joint-position 해석이 더 잘 맞는다.
+  - 특히 insert는 dense gripper-closing 기록이 같이 있으면 AbsJointPos로 1.0까지 올라간다.
+
+추가 실험 결과:
+- insert에 DenseGrip + AbsJointPos를 적용하면 env 0,1 x 5 demos에서 1.0이 나왔다.
+- scoop에 대해 AbsJointPos 개선형을 추가로 시험했지만 0.9를 넘기지 못했다.
+  - absolute hold 2: 0.1
+  - absolute hold 3: 0.1
+  - delta joint position: 0.0
+  - densegrip + absolute hold 2: 0.1
+
+대표 결과 파일:
+
+close_box
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_pack_train01x5_v1/close_box/saved_pack_replay_stored_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_pack_train01x5_v1/close_box/saved_pack_replay_finite_diff.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/abs_joint_pos_train01x5/close_box.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/fill_table/close_obsjv_h3.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/close_box_variant_search/stored_joint_vel_ctrl.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/fill_table/close_posfd_ctrl.json
+
+slide_block_to_target
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_pack_train01x5_v1/slide_block_to_target/saved_pack_replay_stored_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_pack_train01x5_v1/slide_block_to_target/saved_pack_replay_finite_diff.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/abs_joint_pos_train01x5/slide_block_to_target.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/fill_table/slide_obsjv_h3.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/fill_table/slide_obsjv_ctrl.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/fill_table/slide_posfd_ctrl.json
+
+insert_onto_square_peg
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_pack_train01x5_v1/insert_onto_square_peg/saved_pack_replay_stored_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_pack_train01x5_v1/insert_onto_square_peg/saved_pack_replay_finite_diff.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/abs_joint_pos_train01x5/insert_onto_square_peg.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/fill_table/insert_obsjv_h3.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/target_joint_vel_gripclose_insert/insert_onto_square_peg/saved_pack_replay_stored_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/densegrip_obsjv_train01x5/insert_onto_square_peg/saved_pack_replay_stored_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/abs_joint_pos_densegrip_train01x5/insert_onto_square_peg.json
+
+scoop_with_spatula
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_mapping_search_b/scoop_existing_stored_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_mapping_search_b/scoop_existing_finite_diff.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_mapping_search_b/scoop_existing_target_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_mapping_search_b/scoop_existing_stored_joint_vel_ctrl.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_mapping_search_b/scoop_existing_finite_diff_ctrl.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/replay_mapping_search_b/scoop_existing_joint_position_absolute.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/densegrip_obsjv_train01x5/scoop_with_spatula/saved_pack_replay_stored_joint_vel.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/abs_joint_pos_densegrip_train01x5/scoop_with_spatula.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/scoop_jointpos_search/absolute_h2_existing.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/scoop_jointpos_search/absolute_h3_existing.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/scoop_jointpos_search/delta_h1_existing.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/scoop_jointpos_search/absolute_h2_densegrip.json
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/scoop_jointpos_search/delta_h1_densegrip.json
+
+close_box DenseGrip broad run
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/densegrip_obsjv_train01x5/close_box/saved_pack_replay_stored_joint_vel.json
+
+slide_block_to_target DenseGrip broad run
+- /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/results/densegrip_obsjv_train01x5/slide_block_to_target/saved_pack_replay_stored_joint_vel.json

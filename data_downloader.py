@@ -6,8 +6,7 @@ from urllib import request
 NUM_PROCESSES = 64
 # Upload a folder by chunking it into multiple uploads
 DV_URL = "https://dataverse.harvard.edu/"
-# INTRODUCE HERE YOU API TOKEN FROM DATAVERSE HARDVARD
-API_TOKEN = "API_TOKEN"
+API_TOKEN_ENV_VAR = "DATAVERSE_API_TOKEN"
 
 def download_envs(path, task, envs, files, PID):
     for env in envs:
@@ -30,12 +29,12 @@ def download_envs(path, task, envs, files, PID):
         file_id = [file for file in files if f"{task}_fed.yaml" in file["label"]][0]["dataFile"]["id"]
         request.urlretrieve(f"https://dataverse.harvard.edu/api/access/datafile/persistentId/{file_id}?persistentId={PID}", f"./datasets/{path}/{task}_fed.yaml")
 
-def download(envs_per_chunk, task, path, PID, data_type, num_envs):
+def download(envs_per_chunk, task, path, PID, data_type, num_envs, start_env=None, end_env=None):
     print(f"Downloading to {path}")
 
-    start_env = 0
+    default_start_env = 0
     if data_type == "eval":
-        start_env = 400
+        default_start_env = 400
     
     if data_type == "test":
         len_dataset = 1
@@ -51,8 +50,14 @@ def download(envs_per_chunk, task, path, PID, data_type, num_envs):
             len_dataset = num_envs
         else:
             raise ValueError("Number of environments should be maximum 400 for training and 50 for eval")
-        
-    envs = ["env_" + str(i) for i in range(start_env, len_dataset+start_env)]
+
+    computed_start_env = default_start_env if start_env is None else start_env
+    computed_end_env = computed_start_env + len_dataset if end_env is None else end_env
+
+    if computed_end_env <= computed_start_env:
+        raise ValueError("end_env must be greater than start_env")
+
+    envs = ["env_" + str(i) for i in range(computed_start_env, computed_end_env)]
     envs = sorted(envs, key=lambda x: int(x.split("_")[-1]))
     chunk_envs = [envs[i:i+envs_per_chunk] for i in range(0, len(envs), envs_per_chunk)]
 
@@ -64,9 +69,13 @@ def download(envs_per_chunk, task, path, PID, data_type, num_envs):
         download_envs(path, task, envs, files, PID)
     
 
-def install_API_token():
+def install_API_token(api_token):
+    if not api_token:
+        raise ValueError(
+            f"Dataverse API token is required. Pass --api-token or set {API_TOKEN_ENV_VAR}."
+        )
     opener = request.build_opener()
-    opener.addheaders = [("X-Dataverse-key", API_TOKEN)]
+    opener.addheaders = [("X-Dataverse-key", api_token)]
     request.install_opener(opener)
 
 def main(args):
@@ -91,13 +100,26 @@ def main(args):
     task = args.task
     path = f"{data_type}/{task}"
 
-    install_API_token()
-    download(envs_per_chunk, task, path, PID, args.data_type, args.num_envs)
+    api_token = args.api_token or os.environ.get(API_TOKEN_ENV_VAR)
+    install_API_token(api_token)
+    download(
+        envs_per_chunk,
+        task,
+        path,
+        PID,
+        args.data_type,
+        args.num_envs,
+        start_env=args.start_env,
+        end_env=args.end_env,
+    )
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_type", type=str, default="training", choices=["training", "eval", "test"])
     parser.add_argument("--task", type=str, default="close_box", choices=["slide_block_to_target", "close_box", "insert_onto_square_peg", "scoop_with_spatula"])
     parser.add_argument("--num_envs", type=int, default=400)
+    parser.add_argument("--api-token", type=str, default=None)
+    parser.add_argument("--start-env", type=int, default=None)
+    parser.add_argument("--end-env", type=int, default=None)
     args = parser.parse_args()
     main(args)

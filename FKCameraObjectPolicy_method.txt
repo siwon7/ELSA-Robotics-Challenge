@@ -1,0 +1,231 @@
+FKCameraObjectPolicy Method Summary
+
+This file summarizes the full FKCameraObjectPolicy used for front-view RGB-only
+federated manipulation. Conceptually, this is the highest-capacity version of
+the method: a frozen DINOv2-style ViT backbone with LoRA on the last attention
+blocks, an FK-conditioned camera adaptor, and query-based robot/object token
+extraction for action prediction.
+
+
+1. High-Level Idea
+
+The policy combines:
+- a foundation visual backbone for robust visual features,
+- robot kinematics / FK state for geometry-aware conditioning,
+- a camera adaptor that compensates for view perturbation without explicit
+  camera calibration,
+- robot/object query tokens that encourage object-centric reasoning,
+- and a final policy head that predicts 8-D actions.
+
+Input:
+- front RGB image x
+- low-dim state s = [joint7, ee_pos3, ee_rot6d6, gripper1]
+
+Output:
+- action a = [joint_velocity7, gripper1]
+
+
+2. ASCII Diagram
+
+                     FKCameraObjectPolicy
+      (front-view RGB + FK state + view adaptor + object tokens)
+
+  front RGB image x                               low-dim state s
+         |                                               |
+         v                                               v
+  +--------------------+                       +----------------------+
+  | resize + normalize |                       | FK / State Encoders  |
+  | to foundation fmt  |                       | joint / ee / grip    |
+  +---------+----------+                       +----------+-----------+
+            |                                             |
+            v                                             v
+  +---------------------------------------------------------------+
+  | DINOv2-style ViT backbone                                     |
+  | frozen base weights                                           |
+  | LoRA on last attention blocks only                            |
+  +-------------------------+-------------------------------------+
+                            |
+                 +----------+-----------+
+                 |                      |
+                 v                      v
+             cls token C            patch tokens P
+                 |                      |
+                 +----------+-----------+
+                            |
+                            v
+                  +---------------------------+
+                  | View / Camera Adaptor     |
+                  | input: [C ; S]            |
+                  | output:                   |
+                  |  - view code V            |
+                  |  - gamma, beta            |
+                  |  - latent shift du,dv     |
+                  |  - robot query qr         |
+                  |  - object query bias qo   |
+                  +------------+--------------+
+                               |
+            +------------------+------------------+
+            |                                     |
+            v                                     v
+  FiLM-like feature modulation on P      coordinate shift on P
+  P <- P * (1 + 0.1*gamma) + 0.1*beta    P <- P + pos(du,dv)
+            \                                     /
+             \                                   /
+              +---------------+-----------------+
+                              |
+                              v
+                      adapted patch tokens P*
+
+                 +--------------------------------------+
+                 | Query Token Extractor                |
+                 | queries = [robot query, object q's] |
+                 | cross-attend to P*                  |
+                 +----------------+---------------------+
+                                  |
+                +-----------------+------------------+
+                |                                    |
+                v                                    v
+           robot token R                      object tokens O1..Ok
+
+                 +-----------------+------------------+
+                 |                                    |
+                 v                                    v
+        global visual feature G               object token flat O
+
+                [ G ; O ; FK state S ; view code V ]
+                                 |
+                                 v
+                         +---------------+
+                         | MLP policy    |
+                         +-------+-------+
+                                 |
+                                 v
+                               tanh
+                                 |
+                                 v
+                              action a
+
+
+3. Forward Path
+
+Step 1. Visual encoding
+- The front RGB image is resized and normalized for the DINOv2-style ViT.
+- The visual backbone produces:
+  - a global CLS token C
+  - patch tokens P
+
+Step 2. Robot / FK encoding
+- The low-dimensional state is split into:
+  - joint positions
+  - FK end-effector position
+  - FK end-effector 6D rotation
+  - gripper state
+- These are encoded into a state embedding S.
+
+Step 3. FK-conditioned camera adaptor
+- The adaptor takes [C ; S] as input.
+- It predicts:
+  - view code V
+  - feature modulation parameters gamma and beta
+  - latent camera shift du,dv
+  - robot query qr
+  - object-query bias qo
+
+Step 4. Patch adaptation
+- Patch tokens are modulated with FiLM-like feature conditioning.
+- Patch coordinates are shifted with a small latent camera offset.
+- This produces adapted patch tokens P*.
+
+Step 5. Query-based token extraction
+- A robot query and multiple object queries cross-attend to P*.
+- The extractor outputs:
+  - one robot token R
+  - multiple object tokens O1..Ok
+
+Step 6. Final action prediction
+- The final policy head fuses:
+  - global visual feature G
+  - flattened object tokens O
+  - FK state embedding S
+  - adaptor view code V
+- It predicts an 8-dimensional action vector:
+  - 7 joint velocities
+  - 1 gripper command
+
+
+4. Why This Design Exists
+
+The method is intended to address two main problems:
+
+- View perturbation / camera inconsistency
+  Instead of relying on explicit camera extrinsics, the model learns a latent
+  adaptor that normalizes visual features conditioned on robot kinematics.
+
+- Object-centric reasoning under appearance variation
+  Instead of using only a single global visual feature, the model extracts
+  robot and object-centric tokens from foundation-model patch embeddings.
+
+
+5. Training Losses
+
+Main loss:
+- action RMSE / MSE-based behavior cloning loss
+
+Auxiliary losses:
+- robot token <-> FK projection alignment loss
+- object token diversity loss
+- weak/strong augmentation action consistency
+- feature consistency
+- camera shift regularization
+- modulation magnitude regularization
+- optional attention entropy regularization
+
+Overall view:
+
+L_total =
+  L_bc
+  + L_aug_bc
+  + L_action_consistency
+  + L_feature_consistency
+  + L_robot_fk_alignment
+  + L_slot_diversity
+  + L_camera_reg
+  + L_modulation_reg
+  + L_attn_entropy
+
+
+6. Federated Learning View
+
+Within the federated setting:
+- the heavy visual backbone base weights remain frozen,
+- lightweight LoRA parameters are trained on the last attention blocks,
+- camera adaptor, query extractor, FK encoders, and policy head are trainable,
+- trainable parameters are aggregated across clients using FedAvg.
+
+Aggregate:
+- LoRA weights
+- camera adaptor
+- robot/object queries
+- FK/state encoders
+- final policy head
+
+Frozen:
+- DINOv2 backbone base weights
+
+
+7. Short Figure Caption
+
+Architecture of FKCameraObjectPolicy. A DINOv2-style ViT backbone extracts
+global and patch-level visual features from a front RGB image, while an FK
+state branch encodes robot kinematics. An FK-conditioned camera adaptor predicts
+feature modulation, latent view shift, and query priors, and the adapted patch
+tokens are parsed into robot and object-centric tokens for final action
+prediction.
+
+
+8. One-Line Summary
+
+FKCameraObjectPolicy is a front-view RGB-only manipulation policy that combines
+a frozen foundation ViT, LoRA-based lightweight adaptation, FK-conditioned view
+normalization, and object-centric query tokens to improve robust action
+prediction in federated learning.

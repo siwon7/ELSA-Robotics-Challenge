@@ -1,0 +1,118 @@
+{
+  "agent_map": [
+    {
+      "role": "lead",
+      "agent": "research_director",
+      "responsibility": "Lock the claim, prioritize runs, and synthesize decisions."
+    },
+    {
+      "role": "repro",
+      "agent": "repro_guardian",
+      "responsibility": "Audit dataset integrity, certify clean baselines, and track unstable environments."
+    },
+    {
+      "role": "implementer",
+      "agent": "implementer",
+      "responsibility": "Own code and config edits. This is the only write agent."
+    },
+    {
+      "role": "analyst",
+      "agent": "result_analyst",
+      "responsibility": "Summarize loss, RMSE, online SR, and checkpoint trends."
+    },
+    {
+      "role": "critic",
+      "agent": "counterexample_scout",
+      "responsibility": "Challenge claims, spot missing baselines, and flag unfair comparisons."
+    }
+  ],
+  "task_slots": [
+    {
+      "slot": 0,
+      "task": "close_box",
+      "status": "protected",
+      "note": "Leave existing run untouched."
+    },
+    {
+      "slot": 1,
+      "task": "insert_onto_square_peg",
+      "status": "protected",
+      "note": "Leave existing run untouched."
+    },
+    {
+      "slot": 2,
+      "task": "scoop_with_spatula",
+      "status": "queued",
+      "note": "Secondary CoRL pilot after slide becomes stable."
+    },
+    {
+      "slot": 3,
+      "task": "slide_block_to_target",
+      "status": "active",
+      "note": "Primary CoRL-facing task."
+    }
+  ],
+  "experiments": [
+    {
+      "name": "slot3_slide_baseline_repro",
+      "slot": 3,
+      "variant": "baseline_repro",
+      "launcher": "current_repo",
+      "priority": 1,
+      "run_config": {
+        "num-server-rounds": 15,
+        "local-epochs": 10,
+        "fraction-fit": 0.05,
+        "fraction-eval": 0.0025,
+        "dataset-task": "slide_block_to_target",
+        "train-split": 0.9,
+        "use-wandb": true
+      },
+      "notes": [
+        "Run repro_guard first on slot 3 before launch.",
+        "This is the clean baseline that gates all later claims.",
+        "Keep slot 0 and slot 1 untouched."
+      ]
+    },
+    {
+      "name": "slot3_slide_structured_retry",
+      "slot": 3,
+      "variant": "structured_retry",
+      "launcher": "external_structured_tree",
+      "priority": 2,
+      "run_config": {
+        "num-server-rounds": 15,
+        "local-epochs": 10,
+        "fraction-fit": 0.05,
+        "fraction-eval": 0.0025,
+        "dataset-task": "slide_block_to_target",
+        "train-split": 0.9
+      },
+      "notes": [
+        "Launch only after the baseline is clean through round 15.",
+        "Requires your retry-patched structured code path outside this repo.",
+        "Use the same evaluation protocol as the baseline."
+      ]
+    },
+    {
+      "name": "slot2_scoop_baseline_pilot",
+      "slot": 2,
+      "variant": "baseline_pilot",
+      "launcher": "current_repo",
+      "priority": 3,
+      "run_config": {
+        "num-server-rounds": 10,
+        "local-epochs": 10,
+        "fraction-fit": 0.05,
+        "fraction-eval": 0.0025,
+        "dataset-task": "scoop_with_spatula",
+        "train-split": 0.9,
+        "use-wandb": true
+      },
+      "notes": [
+        "Use this only after slide has at least one clean online result.",
+        "Treat it as a breadth check for the CoRL story."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+dataset:
+  root_dir: /mnt/raid0/siwon/data/ELSA-Robotics-Challenge/datasets/training
+  root_eval_dir: /mnt/raid0/siwon/data/ELSA-Robotics-Challenge/datasets/eval
+  root_test_dir: /mnt/raid0/siwon/data/ELSA-Robotics-Challenge/datasets/test
+  env_id: 0
+  env_id_test: 0
+  action_representation: joint_position_keyframe
+  action_chunk_len: 1
+  action_keyframe_horizon: 4
+
+  test_split: 0.9
+  batch_size: 32
+  num_workers: 4
+  num_workers_server: 32
+  enable_live_eval: false
+  num_episodes_live: 5
+  test_env_idx_range: [400, 401]
+  test_live_idxs: [400]
+
+  final_eval_env_idx_range: [400, 410]
+  final_eval_live_idxs: [400, 401, 402, 403, 404, 405, 406, 407, 408, 409]
+  final_test_env_idx_range: [410, 420]
+  final_test_live_idxs: [410, 411, 412, 413, 414, 415, 416, 417, 418, 419]
+
+model:
+  learning_rate: 0.0003
+  weight_decay: 1.0e-05
+  epochs: -1
+  optimizer: adam
+  vision_backbone: dinov3_vits16_frozen
+  projector_dim: 192
+  prox_mu: 0.0
+  action_output_activation: identity
+  normalize_branch_embeddings: true
+  low_dim_dropout_prob: 0.2
+
+transform:
+  normalize_mean: [0.5, 0.5, 0.5]
+  normalize_std: [0.5, 0.5, 0.5]
+  action_min: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, 0.0]
+  action_max: [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 1.0]
+
+video:
+  path: /tmp
+
+wandb:
+  project: BCPolicy-Training
+  video_fps: 20
+  video_format: gif
