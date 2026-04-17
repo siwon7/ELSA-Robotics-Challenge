@@ -1,0 +1,43 @@
+{
+  "task": "slide_block_to_target",
+  "default_env_id": 0,
+  "default_epochs": 50,
+  "groups": {
+    "action_sweep_dinov3": [
+      {
+        "name": "slide_sameenv_action_onestep_dinov3_servo",
+        "config": "experiments/slide_block_to_target_sameenv_action_onestep_dinov3_servo.yaml"
+      },
+      {
+        "name": "slide_sameenv_action_chunk3_dinov3_servo",
+        "config": "experiments/slide_block_to_target_sameenv_action_chunk3_dinov3_servo.yaml"
+      },
+      {
+        "name": "slide_sameenv_action_chunk4_dinov3_servo",
+        "config": "experiments/slide_block_to_target_sameenv_action_chunk4_dinov3_servo.yaml"
+      },
+      {
+        "name": "slide_sameenv_action_keyframe4_dinov3_servo",
+        "config": "experiments/slide_block_to_target_sameenv_action_keyframe4_dinov3_servo.yaml"
+      }
+    ],
+    "vision_sweep_chunk4exec2_servo": [
+      {
+        "name": "slide_sameenv_vision_chunk4exec2_cnn_servo",
+        "config": "experiments/slide_block_to_target_sameenv_vision_chunk4exec2_cnn_servo.yaml"
+      },
+      {
+        "name": "slide_sameenv_vision_chunk4exec2_dinov3_servo",
+        "config": "experiments/slide_block_to_target_sameenv_vision_chunk4exec2_dinov3_servo.yaml"
+      },
+      {
+        "name": "slide_sameenv_vision_chunk4exec2_depth_servo",
+        "config": "experiments/slide_block_to_target_sameenv_vision_chunk4exec2_depth_servo.yaml"
+      },
+      {
+        "name": "slide_sameenv_vision_chunk4exec2_dino_depth_servo",
+        "config": "experiments/slide_block_to_target_sameenv_vision_chunk4exec2_dino_depth_servo.yaml"
+      }
+    ]
+  }
+}

@@ -14,12 +14,14 @@ from torch.utils.data import DataLoader
 from elsa_learning_agent.agent import Agent
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.utils import (
+    get_action_chunk_len,
     get_action_output_activation,
     get_action_pipeline_preset,
     get_action_representation,
     get_execution_action_adapter,
     get_execution_action_interface,
     get_image_transform,
+    get_receding_horizon_execute_steps,
 )
 from federated_elsa_robotics.eval_model import online_evaluation
 from federated_elsa_robotics.task import train, validate_one_epoch
@@ -129,6 +131,8 @@ def main():
     result_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = ckpt_dir / f"env_{args.env_id:03d}.pth"
+    resolved_config_path = result_dir / "resolved_config.yaml"
+    OmegaConf.save(cfg, resolved_config_path)
 
     offline_loss = validate_one_epoch(agent, val_loader, device)
     agent.save(str(ckpt_path))
@@ -159,8 +163,16 @@ def main():
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "policy_name": "BCPolicy",
+        "resolved_config_path": str(resolved_config_path),
+        "vision_backbone": str(getattr(cfg.model, "vision_backbone", "cnn")),
+        "projector_dim": int(getattr(cfg.model, "projector_dim", 256)),
         "action_pipeline_preset": str(get_action_pipeline_preset(cfg)),
         "action_representation": str(get_action_representation(cfg)),
+        "action_chunk_len": int(get_action_chunk_len(cfg)),
+        "action_keyframe_horizon": int(
+            getattr(cfg.dataset, "action_keyframe_horizon", 1) or 1
+        ),
+        "receding_horizon_execute_steps": int(get_receding_horizon_execute_steps(cfg)),
         "execution_action_interface": str(get_execution_action_interface(cfg)),
         "execution_action_adapter": str(get_execution_action_adapter(cfg)),
         "checkpoint_path": str(ckpt_path),
