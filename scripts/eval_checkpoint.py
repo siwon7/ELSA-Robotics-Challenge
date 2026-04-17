@@ -41,18 +41,36 @@ def main():
     parser.add_argument("--simulator", action="store_true")
     parser.add_argument("--output", default=None)
     parser.add_argument("--policy-name", default=None)
+    parser.add_argument("--dataset-config-path", default="dataset_config.yaml")
+    parser.add_argument("--offline-env-start", type=int, default=None)
+    parser.add_argument("--offline-env-end", type=int, default=None)
+    parser.add_argument("--live-env-ids", default=None)
+    parser.add_argument("--num-episodes-live", type=int, default=None)
     args = parser.parse_args()
 
     model_path = Path(args.model_path)
     inferred_task, local_epochs, round_num = infer_metadata(model_path)
     task = args.task or inferred_task
 
-    cfg = OmegaConf.load("dataset_config.yaml")
+    cfg = OmegaConf.load(args.dataset_config_path)
     policy_name = args.policy_name or infer_policy_name_from_model_path(
         str(model_path),
         default=cfg.model.get("policy_name"),
     )
     cfg.model.policy_name = policy_name
+    if args.offline_env_start is not None and args.offline_env_end is not None:
+        if args.split == "eval":
+            cfg.dataset.final_eval_env_idx_range = [args.offline_env_start, args.offline_env_end]
+        elif args.split == "test":
+            cfg.dataset.final_test_env_idx_range = [args.offline_env_start, args.offline_env_end]
+    if args.live_env_ids:
+        live_ids = [int(item.strip()) for item in args.live_env_ids.split(",") if item.strip()]
+        if args.split == "eval":
+            cfg.dataset.final_eval_live_idxs = live_ids
+        elif args.split == "test":
+            cfg.dataset.final_test_live_idxs = live_ids
+    if args.num_episodes_live is not None:
+        cfg.dataset.num_episodes_live = int(args.num_episodes_live)
     if policy_uses_cached_visual_features(policy_name):
         cfg.model.cache_features = True
     agent = load_agent(str(model_path), args.device, config=cfg, policy_name=policy_name)

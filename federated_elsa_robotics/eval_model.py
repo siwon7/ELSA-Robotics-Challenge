@@ -4,11 +4,15 @@ import glob
 import json
 import os
 import time
+from pathlib import Path
 
+import cv2
+import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from rlbench.backend.exceptions import InvalidActionError
 from torch.utils.data import DataLoader, Dataset
 
 from elsa_learning_agent.agent import Agent as LegacyBCAgent
@@ -21,13 +25,20 @@ from elsa_learning_agent.agent_forward_kinematics import (
     infer_policy_name_from_model_path,
     policy_uses_cached_visual_features,
 )
-from elsa_learning_agent.dataset.compat import load_pickled_data
+from elsa_learning_agent.dataset.compat import (
+    get_action_dim,
+    get_action_space,
+    is_pose_action_space,
+    load_pickled_data,
+)
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.kinematics import LOW_DIM_STATE_DIM
 from elsa_learning_agent.utils import (
+    build_arm_action_mode,
     denormalize_action,
     get_image_transform,
     load_environment,
+    prepare_action_for_env,
     process_obs,
 )
 from federated_elsa_robotics.task import validate_one_epoch
@@ -36,19 +47,70 @@ from federated_elsa_robotics.task import validate_one_epoch
 LEGACY_BC_POLICY_NAME = "legacy_bc"
 
 
+def write_mp4_video(frames, output_path, fps):
+    if not frames:
+        return
+    try:
+        with imageio.get_writer(
+            str(output_path),
+            format="FFMPEG",
+            mode="I",
+            fps=fps,
+            codec="libx264",
+            pixelformat="yuv420p",
+            ffmpeg_log_level="error",
+            output_params=["-movflags", "+faststart"],
+        ) as writer:
+            for frame in frames:
+                writer.append_data(np.asarray(frame, dtype=np.uint8))
+        return
+    except Exception:
+        if output_path.exists():
+            output_path.unlink()
+
+    height, width = frames[0].shape[:2]
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    try:
+        for frame in frames:
+            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
+
+
+def write_gif_video(frames, output_path, fps):
+    if not frames:
+        return
+    duration_ms = 1000 / float(fps)
+    imageio.mimsave(str(output_path), frames, format="GIF", duration=duration_ms, loop=0)
+
+
+def write_episode_videos(frames, base_path, fps):
+    mp4_path = base_path.with_suffix(".mp4")
+    gif_path = base_path.with_suffix(".gif")
+    write_mp4_video(frames, mp4_path, fps)
+    write_gif_video(frames, gif_path, fps)
+    return {"mp4": str(mp4_path), "gif": str(gif_path)}
+
+
 def build_net_args(config=None, policy_name=None):
+    action_dim = get_action_dim(config) if config is not None else 8
     if policy_name == LEGACY_BC_POLICY_NAME:
         return {
             "image_channels": 3,
             "low_dim_state_dim": 8,
-            "action_dim": 8,
+            "action_dim": action_dim,
             "image_size": (128, 128),
         }
 
     kwargs = build_agent_kwargs(
         image_channels=3,
         low_dim_state_dim=LOW_DIM_STATE_DIM,
-        action_dim=8,
+        action_dim=action_dim,
         image_size=(128, 128),
         config=config,
     )
@@ -130,6 +192,10 @@ def legacy_bc_process_obs(obs, transform=None):
 
 class LegacyBCDataset(Dataset):
     def __init__(self, config, train=False, test=False, normalize=False):
+        from elsa_learning_agent.dataset.compat import build_action_target
+
+        self._build_action_target = build_action_target
+        self.config = config
         self.root_dir = config.dataset.root_dir
         task = config.dataset.task
         env_id = config.dataset.env_id
@@ -142,7 +208,7 @@ class LegacyBCDataset(Dataset):
         )
 
         demos_raw_data = load_pickled_data(data_path)
-        self.normalize = normalize
+        self.normalize = normalize or is_pose_action_space(get_action_space(config))
         self.action_min = torch.tensor(config.transform.action_min)
         self.action_max = torch.tensor(config.transform.action_max)
 
@@ -165,7 +231,7 @@ class LegacyBCDataset(Dataset):
         next_obs = trajectory[time_step + 1]
         front_image, low_dim_state = legacy_bc_process_obs(obs, self.transform)
         action = torch.tensor(
-            np.concatenate((obs.joint_velocities, np.array([next_obs.gripper_open]))),
+            self._build_action_target(obs, next_obs, self.config),
             dtype=torch.float32,
         )
         if self.normalize:
@@ -188,7 +254,6 @@ def legacy_bc_load_environment(base_cfg, collection_cfg, idx_environment, headle
     from colosseum.rlbench.extensions.environment import EnvironmentExt
     from colosseum.rlbench.utils import ObservationConfigExt, name_to_class
     from rlbench.action_modes.action_mode import MoveArmThenGripper
-    from rlbench.action_modes.arm_action_modes import JointVelocity
     from rlbench.action_modes.gripper_action_modes import Discrete
 
     task = name_to_class(base_cfg.env.task_name, TASKS_PY_FOLDER)
@@ -219,9 +284,12 @@ def legacy_bc_load_environment(base_cfg, collection_cfg, idx_environment, headle
 
     data_cfg, env_cfg = config.data, config.env
 
+    action_space = get_action_space(base_cfg)
+    arm_action_mode = build_arm_action_mode(action_space)
+
     rlbench_env = EnvironmentExt(
         action_mode=MoveArmThenGripper(
-            arm_action_mode=JointVelocity(),
+            arm_action_mode=arm_action_mode,
             gripper_action_mode=Discrete(),
         ),
         obs_config=ObservationConfigExt(data_cfg),
@@ -303,6 +371,8 @@ def run_live_episodes(
     idx_environment,
     num_episodes,
     headless,
+    save_video_dir=None,
+    video_fps=20,
 ):
     collection_cfg_path = os.path.join(
         base_cfg.dataset.root_dir,
@@ -328,13 +398,17 @@ def run_live_episodes(
         )
     input_adapter = build_policy_input_adapter(agent, base_cfg, device)
     rewards = []
+    episode_videos = []
+    episode_errors = []
     max_steps = int(os.environ.get("ELSA_SIM_MAX_STEPS", "300"))
     try:
-        for _ in range(num_episodes):
+        for episode_idx in range(num_episodes):
             _, obs = task_env.reset()
             terminate = False
             reward = 0.0
             steps = 0
+            episode_error = None
+            frames = [obs.front_rgb.copy()] if save_video_dir is not None else None
             while not terminate and steps < max_steps:
                 with torch.no_grad():
                     if is_legacy_bc_agent(agent):
@@ -353,12 +427,39 @@ def run_live_episodes(
                     torch.tensor(base_cfg.transform.action_min),
                     torch.tensor(base_cfg.transform.action_max),
                 )
-                obs, reward, terminate = task_env.step(denormalized_action.numpy()[0])
+                env_action = prepare_action_for_env(
+                    denormalized_action.numpy()[0],
+                    base_cfg,
+                )
+                try:
+                    obs, reward, terminate = task_env.step(env_action)
+                except InvalidActionError as exc:
+                    episode_error = str(exc)
+                    reward = 0.0
+                    terminate = True
+                    break
+                if frames is not None:
+                    frames.append(obs.front_rgb.copy())
                 steps += 1
             rewards.append(float(reward))
+            episode_errors.append(episode_error)
+            if frames is not None:
+                video_base = Path(save_video_dir) / (
+                    f"{base_cfg.env.task_name}_env_{idx_environment}_episode_{episode_idx}"
+                )
+                video_base.parent.mkdir(parents=True, exist_ok=True)
+                video_record = {
+                    "episode": episode_idx,
+                    "reward": float(reward),
+                    "num_frames": len(frames),
+                    "paths": write_episode_videos(frames, video_base, fps=video_fps),
+                }
+                if episode_error is not None:
+                    video_record["error"] = episode_error
+                episode_videos.append(video_record)
     finally:
         rlbench_env.shutdown()
-    return rewards
+    return rewards, episode_videos, episode_errors
 
 
 def evaluate_online(agent, base_config, task, split, device):
@@ -385,10 +486,19 @@ def evaluate_online(agent, base_config, task, split, device):
         os.environ.get("ELSA_SIM_NUM_EPISODES", base_config.dataset.num_episodes_live)
     )
     headless = os.environ.get("ELSA_SIM_HEADLESS", "0") == "1"
+    save_videos = os.environ.get("ELSA_SIM_SAVE_VIDEOS", "0") == "1"
+    video_dir = os.environ.get("ELSA_SIM_VIDEO_DIR")
+    video_fps = int(os.environ.get("ELSA_SIM_VIDEO_FPS", "20"))
     rewards_per_env = {}
+    videos_per_env = {}
+    errors_per_env = {}
     flattened_rewards = []
     for env_id in env_ids:
-        rewards = run_live_episodes(
+        env_video_dir = None
+        if save_videos:
+            root = Path(video_dir) if video_dir else Path("results") / "online_eval_videos"
+            env_video_dir = root / task / split / f"env_{env_id}"
+        rewards, episode_videos, episode_errors = run_live_episodes(
             agent=agent,
             device=device,
             transform=transform,
@@ -396,16 +506,27 @@ def evaluate_online(agent, base_config, task, split, device):
             idx_environment=env_id,
             num_episodes=num_episodes,
             headless=headless,
+            save_video_dir=env_video_dir,
+            video_fps=video_fps,
         )
         rewards_per_env[env_id] = rewards
+        if episode_videos:
+            videos_per_env[env_id] = episode_videos
+        if any(error is not None for error in episode_errors):
+            errors_per_env[env_id] = episode_errors
         flattened_rewards.extend(rewards)
 
-    return {
+    result = {
         "env_ids": env_ids,
         "rewards_per_env": rewards_per_env,
         "mean_reward": float(np.mean(flattened_rewards)),
         "std_reward": float(np.std(flattened_rewards)),
     }
+    if videos_per_env:
+        result["videos_per_env"] = videos_per_env
+    if errors_per_env:
+        result["errors_per_env"] = errors_per_env
+    return result
 
 
 def checkpoint_stem(local_epochs, fraction_fit, train_test_split, strategy_name, policy_name):
