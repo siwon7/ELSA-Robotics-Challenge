@@ -166,8 +166,12 @@ cython_debug/
 .codex
 .runs/
 wandb/
+wandb
 results/
+results
 datasets
+datasets
+model_checkpoints
 model_checkpoints
 *.fab
 Experiment.md
