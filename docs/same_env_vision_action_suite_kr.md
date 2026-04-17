@@ -28,6 +28,13 @@
 - [chunk4](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_chunk4_dinov3_servo.yaml)
 - [keyframe4](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_keyframe4_dinov3_servo.yaml)
 
+추가 비교군:
+- `action_sweep_dinov3_jpdirect`
+  - 같은 4개 action formulation을 `joint_position_direct`로 다시 확인
+- `JV direct` baseline
+  - [onestep jv direct](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_onestep_dinov3_jvdirect.yaml)
+  - `joint_velocity_direct` one-step이 same-env에서 어느 정도 버티는지 확인
+
 ## Stage 2: Vision Sweep
 
 목적:
@@ -63,7 +70,11 @@ tmux 그룹 실행:
 예시:
 ```bash
 bash scripts/start_same_env_suite_tmux.sh action_sweep_dinov3 same_env_action_sweep 50 0
+bash scripts/start_same_env_suite_tmux.sh action_sweep_dinov3_jpdirect same_env_action_sweep_jpdirect 50 0
 bash scripts/start_same_env_suite_tmux.sh vision_sweep_chunk4exec2_servo same_env_vision_sweep 50 0
+bash scripts/run_same_env_config_one_task.sh slide_block_to_target 0 \
+  /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_onestep_dinov3_jvdirect.yaml \
+  50 0 slide_sameenv_action_onestep_dinov3_jvdirect
 ```
 
 ## 결과 저장 위치
@@ -79,6 +90,8 @@ bash scripts/start_same_env_suite_tmux.sh vision_sweep_chunk4exec2_servo same_en
 ## 추천 순서
 
 1. `action_sweep_dinov3`
-2. same-env best action 선택
-3. 필요하면 `vision_sweep_chunk4exec2_servo`
-4. same-env에서 성능이 확인되면 FL로 이동
+2. `action_sweep_dinov3_jpdirect`
+3. `JV direct` one-step baseline과 비교
+4. same-env best action 선택
+5. 필요하면 `vision_sweep_chunk4exec2_servo`
+6. same-env에서 성능이 확인되면 FL로 이동

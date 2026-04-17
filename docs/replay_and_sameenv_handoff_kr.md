@@ -103,9 +103,11 @@ v = clip(gain * (q_target - q_current), -clip, clip)
 그래서 지금은 순서를 바꿨다.
 
 1. same-env에서 action formulation 먼저 비교
-2. same-env에서 vision encoder 비교
-3. same-env에서 실제로 learning signal이 나오면
-4. 그 다음에만 FL generalization으로 올림
+2. 같은 action formulation을 `JP direct`와 `benchmark-JV servo`로 분리해 비교
+3. 필요하면 `JV direct` one-step baseline도 같이 확인
+4. same-env에서 vision encoder 비교
+5. same-env에서 실제로 learning signal이 나오면
+6. 그 다음에만 FL generalization으로 올림
 
 관련 문서:
 - [same_env_vision_action_suite_kr.md](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/docs/same_env_vision_action_suite_kr.md)
@@ -136,6 +138,15 @@ YAML:
 - [chunk3](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_chunk3_dinov3_servo.yaml)
 - [chunk4](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_chunk4_dinov3_servo.yaml)
 - [keyframe4](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_keyframe4_dinov3_servo.yaml)
+
+같은 4개 비교를 `joint_position_direct`로도 다시 할 수 있다.
+- [onestep jpdirect](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_onestep_dinov3_jpdirect.yaml)
+- [chunk3 jpdirect](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_chunk3_dinov3_jpdirect.yaml)
+- [chunk4 jpdirect](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_chunk4_dinov3_jpdirect.yaml)
+- [keyframe4 jpdirect](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_keyframe4_dinov3_jpdirect.yaml)
+
+별도 baseline:
+- [onestep jvdirect](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/slide_block_to_target_sameenv_action_onestep_dinov3_jvdirect.yaml)
 
 ### Stage 2. Vision Sweep
 
