@@ -43,6 +43,7 @@ class SaveModelMixin:
             f"_ts_{config.dataset['train_split']}_fclients_{fraction_fit}"
         )
         self.save_rounds = self._parse_save_rounds(config)
+        self.num_server_rounds = int(config.dataset["num_server_rounds"])
         self.save_path = Path.joinpath(save_path, config.dataset["task"])
         self.save_path.mkdir(parents=True, exist_ok=True)
         self.use_wandb = use_wandb
@@ -84,13 +85,18 @@ class SaveModelMixin:
                 aggregated_parameters
             )
             params_dict = zip(
-                self.agent.policy.state_dict().keys(),
+                self.agent.federated_state_keys(),
                 aggregated_ndarrays,
             )
             state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-            self.agent.policy.load_state_dict(state_dict)
+            self.agent.load_federated_state_dict(state_dict)
 
-            if self.save_rounds is None or server_round in self.save_rounds:
+            should_save = (
+                self.save_rounds is None
+                or server_round in self.save_rounds
+                or server_round == self.num_server_rounds
+            )
+            if should_save:
                 path = Path.joinpath(
                     self.save_path,
                     f"{self.save_name}_round_{server_round}.pth",

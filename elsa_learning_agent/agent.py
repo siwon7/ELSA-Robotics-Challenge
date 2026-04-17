@@ -34,6 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from collections import OrderedDict
 
 class Agent():
     def __init__(self, image_channels=3, low_dim_state_dim=10, action_dim=4, image_size=(64, 64)):
@@ -53,9 +54,12 @@ class Agent():
     def eval(self, ):
         self.policy.eval()
 
-    def get_action(self, image, low_dim_state):
-        # Get the action from the policy
-        return self.policy(image, low_dim_state) # Assuming the policy is a function
+    def get_action(self, image, low_dim_state, return_aux=False, **forward_kwargs):
+        # Legacy BC ignores auxiliary inputs but matches the federated runtime interface.
+        action = self.policy(image, low_dim_state)
+        if return_aux:
+            return action, {}
+        return action
     
     def load_state_dict(self, state_dict,device=None):
         if device is None:
@@ -67,6 +71,25 @@ class Agent():
     
     def save(self, path):
         torch.save(self.policy.state_dict(), path)
+        return self
+
+    def federated_state_keys(self):
+        return list(self.policy.state_dict().keys())
+
+    def get_federated_state_dict(self):
+        state_dict = self.policy.state_dict()
+        return OrderedDict((key, state_dict[key]) for key in self.federated_state_keys())
+
+    def load_federated_state_dict(self, state_dict):
+        current_state = self.policy.state_dict()
+        current_state.update(state_dict)
+        self.policy.load_state_dict(current_state, strict=False)
+        return self
+
+    def get_local_state_dict(self):
+        return OrderedDict()
+
+    def load_local_state_dict(self, state_dict):
         return self
 
 

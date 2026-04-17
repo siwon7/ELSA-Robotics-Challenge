@@ -11,6 +11,44 @@ from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.agent_forward_kinematics import Agent
 
 
+def auxiliary_loss_weights(config):
+    model_cfg = config.model
+    return {
+        "phase_loss": float(model_cfg.get("phase_loss_weight", 0.0)),
+        "relation_loss": float(model_cfg.get("relation_loss_weight", 0.0)),
+        "retrieval_loss": float(model_cfg.get("retrieval_loss_weight", 0.0)),
+        "recovery_loss": float(model_cfg.get("recovery_loss_weight", 0.0)),
+        "smooth_loss": float(model_cfg.get("smooth_loss_weight", 0.0)),
+    }
+
+
+def compute_total_loss(agent, batch, criterion, config):
+    image = batch["image"]
+    low_dim_state = trim_low_dim_state(agent, batch["low_dim_state"])
+    action = batch["action"]
+    progress = batch.get("progress")
+
+    predicted_action, aux = agent.get_action(
+        image,
+        low_dim_state,
+        return_aux=True,
+        progress=progress,
+        action_target=action,
+    )
+    bc_loss = criterion(predicted_action, action)
+    total_loss = bc_loss
+    metrics = {"bc_loss": float(bc_loss.detach().item())}
+
+    for name, weight in auxiliary_loss_weights(config).items():
+        aux_value = aux.get(name)
+        if aux_value is None or weight <= 0.0:
+            continue
+        total_loss = total_loss + (weight * aux_value)
+        metrics[name] = float(aux_value.detach().item())
+
+    return total_loss, metrics
+
+
 def load_data_colosseum(partition_id: int, num_partitions: int, train_split : float = 0.9, config: dict = None):
     """Load partition Colosseum data."""
     # Load the dataset
@@ -30,12 +68,22 @@ def train_one_epoch(agent: Agent, train_loader, optimizer, criterion, epoch, dev
     total_loss = 0.0
     for batch in train_loader:
         image = batch["image"].to(device)
-        low_dim_state = trim_low_dim_state(agent, batch["low_dim_state"].to(device))
         action = batch["action"].to(device)
+        train_batch = {
+            "image": image,
+            "low_dim_state": batch["low_dim_state"].to(device),
+            "action": action,
+        }
+        if "progress" in batch:
+            train_batch["progress"] = batch["progress"].to(device)
 
         optimizer.zero_grad()
-        predicted_action = agent.get_action(image, low_dim_state)
-        loss = criterion(predicted_action, action)
+        loss, _ = compute_total_loss(
+            agent,
+            train_batch,
+            criterion=criterion,
+            config=agent.training_config,
+        )
         loss.backward()
         optimizer.step()
 
@@ -67,6 +115,7 @@ def validate_one_epoch(agent:Agent, val_loader, device):
 def train(agent: Agent, trainloader, epochs, device, config):
     """Train the model on the training set."""
     agent.policy.to(device)  # move model to GPU if available
+    agent.training_config = config
     criterion = nn.MSELoss()  # Behavioral Cloning uses MSE loss
     optimizer = optim.Adam(agent.policy.parameters(), lr=config.model.learning_rate, weight_decay=config.model.weight_decay)
 
@@ -82,9 +131,9 @@ def train(agent: Agent, trainloader, epochs, device, config):
     return avg_trainloss
 
 def get_weights(agent: Agent):
-    return [val.cpu().numpy() for val in agent.policy.state_dict().values()]
+    return [val.cpu().numpy() for val in agent.get_federated_state_dict().values()]
 
 def set_weights(agent: Agent, parameters: list):
-    params_dict = zip(agent.policy.state_dict().keys(), parameters)
+    params_dict = zip(agent.federated_state_keys(), parameters)
     state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-    agent.policy.load_state_dict(state_dict, strict=True)
+    agent.load_federated_state_dict(state_dict)

@@ -8,7 +8,10 @@ from torch.utils.data import Dataset
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
 from elsa_learning_agent.dataset.compat import (
+    build_action_target,
+    get_action_space,
     get_image_transform,
+    is_pose_action_space,
     load_pickled_data,
     normalize_action,
     process_obs,
@@ -17,6 +20,7 @@ from elsa_learning_agent.dataset.compat import (
 
 class ImitationDataset(Dataset):
     def __init__(self, config, train=False, test=False, normalize=False):
+        self.config = config
         self.root_dir = config.dataset.root_dir
         task = config.dataset.task
         env_id = config.dataset.env_id
@@ -24,7 +28,7 @@ class ImitationDataset(Dataset):
         data_path = os.path.join(self.root_dir, f"{task}", f"env_{env_id}", "episodes_observations.pkl.gz")
         
         demos_raw_data = load_pickled_data(data_path)
-        self.normalize = normalize
+        self.normalize = normalize or is_pose_action_space(get_action_space(config))
         self.action_min = torch.tensor(config.transform.action_min)
         self.action_max = torch.tensor(config.transform.action_max)
 
@@ -43,15 +47,16 @@ class ImitationDataset(Dataset):
             self.demos_idx.append(len(self.data))
             num_steps = len(demo) - 1
             for t in range(num_steps):
-                self.data.append(self._load_datapoint(demo, t))
+                self.data.append(self._load_datapoint(demo, t, num_steps))
 
-    def _load_datapoint(self, trajectory, time_step):
+    def _load_datapoint(self, trajectory, time_step, num_steps):
         obs = trajectory[time_step]
         next_obs = trajectory[time_step + 1]
         front_image, low_dim_state = process_obs(obs, self.transform)
-        action = torch.tensor(
-            np.concatenate((obs.joint_velocities, np.array([next_obs.gripper_open]))), 
-            dtype=torch.float32
+        action = torch.tensor(build_action_target(obs, next_obs, self.config), dtype=torch.float32)
+        progress = torch.tensor(
+            float(time_step) / float(max(num_steps - 1, 1)),
+            dtype=torch.float32,
         )
         if self.normalize:
             action = normalize_action(action, self.action_min, self.action_max)
@@ -59,6 +64,7 @@ class ImitationDataset(Dataset):
             "action": action,
             "low_dim_state": low_dim_state,
             "image": front_image,
+            "progress": progress,
         }
 
     def __len__(self):

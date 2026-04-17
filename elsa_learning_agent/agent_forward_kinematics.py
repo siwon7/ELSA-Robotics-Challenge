@@ -26,6 +26,13 @@ DEFAULT_NUM_OBJECT_TOKENS = 4
 DEFAULT_NUM_LORA_BLOCKS = 4
 DEFAULT_NUM_ATTENTION_HEADS = 8
 DEFAULT_IMAGE_FEATURE_DIM = 384
+DEFAULT_FRCR_LATENT_DIM = 256
+DEFAULT_FRCR_PHASE_BINS = 4
+DEFAULT_FRCR_RELATION_DIM = 4
+DEFAULT_FRCR_RETRIEVAL_TOPK = 8
+DEFAULT_FRCR_PERTURB_SCALE = 0.05
+DEFAULT_FRCR_LOCAL_HIDDEN_DIM = 256
+DEFAULT_FRCR_SEPARATE_GRIPPER_HEAD = False
 
 
 def _expected_low_dim_state_dim():
@@ -65,6 +72,27 @@ def build_policy_kwargs_from_config(config=None):
         ),
         "num_attention_heads": int(
             model_cfg.get("num_attention_heads", DEFAULT_NUM_ATTENTION_HEADS)
+        ),
+        "latent_dim": int(model_cfg.get("latent_dim", DEFAULT_FRCR_LATENT_DIM)),
+        "num_phase_bins": int(
+            model_cfg.get("num_phase_bins", DEFAULT_FRCR_PHASE_BINS)
+        ),
+        "relation_dim": int(
+            model_cfg.get("relation_dim", DEFAULT_FRCR_RELATION_DIM)
+        ),
+        "retrieval_topk": int(
+            model_cfg.get("retrieval_topk", DEFAULT_FRCR_RETRIEVAL_TOPK)
+        ),
+        "perturb_scale": float(
+            model_cfg.get("perturb_scale", DEFAULT_FRCR_PERTURB_SCALE)
+        ),
+        "local_hidden_dim": int(
+            model_cfg.get("local_hidden_dim", DEFAULT_FRCR_LOCAL_HIDDEN_DIM)
+        ),
+        "separate_gripper_head": bool(
+            model_cfg.get(
+                "separate_gripper_head", DEFAULT_FRCR_SEPARATE_GRIPPER_HEAD
+            )
         ),
     }
 
@@ -114,8 +142,9 @@ class Agent:
     def eval(self):
         self.policy.eval()
 
-    def get_action(self, image, low_dim_state, return_aux=False):
-        return self.policy(image, low_dim_state, return_aux=return_aux)
+    def get_action(self, image, low_dim_state, return_aux=False, **forward_kwargs):
+        kwargs = filter_forward_kwargs(self.policy, forward_kwargs)
+        return self.policy(image, low_dim_state, return_aux=return_aux, **kwargs)
 
     def load_state_dict(self, state_dict, device=None):
         if device is None:
@@ -150,12 +179,50 @@ class Agent:
         self.policy.load_state_dict(current_state, strict=False)
         return self
 
+    def federated_state_keys(self):
+        if hasattr(self.policy, "federated_state_keys"):
+            return list(self.policy.federated_state_keys())
+        return list(self.policy.state_dict().keys())
+
+    def get_federated_state_dict(self):
+        state_dict = self.policy.state_dict()
+        return OrderedDict((key, state_dict[key]) for key in self.federated_state_keys())
+
+    def load_federated_state_dict(self, state_dict):
+        current_state = self.policy.state_dict()
+        current_state.update(state_dict)
+        self.policy.load_state_dict(current_state, strict=False)
+        return self
+
+    def local_state_keys(self):
+        federated_keys = set(self.federated_state_keys())
+        return [
+            key for key in self.policy.state_dict().keys() if key not in federated_keys
+        ]
+
+    def get_local_state_dict(self):
+        state_dict = self.policy.state_dict()
+        return OrderedDict((key, state_dict[key]) for key in self.local_state_keys())
+
+    def load_local_state_dict(self, state_dict):
+        current_state = self.policy.state_dict()
+        current_state.update(state_dict)
+        self.policy.load_state_dict(current_state, strict=False)
+        return self
+
 
 def filter_policy_kwargs(policy_cls, policy_kwargs):
     signature = inspect.signature(policy_cls.__init__)
     accepted = set(signature.parameters.keys())
     accepted.discard("self")
     return {key: value for key, value in policy_kwargs.items() if key in accepted}
+
+
+def filter_forward_kwargs(policy, forward_kwargs):
+    signature = inspect.signature(policy.forward)
+    accepted = set(signature.parameters.keys())
+    accepted.discard("self")
+    return {key: value for key, value in forward_kwargs.items() if key in accepted}
 
 
 class CNNEncoder(nn.Module):
@@ -910,10 +977,372 @@ class FKDinoCachedHeadPolicy(nn.Module):
         return action
 
 
+class FRCRPolicy(nn.Module):
+    """Federated retrieval-conditioned recovery policy with local adapters."""
+
+    LOCAL_STATE_PREFIXES = (
+        "local_adapter.",
+        "local_recovery.",
+        "local_residual_head.",
+        "local_arm_residual_head.",
+        "local_gripper_residual_head.",
+    )
+
+    def __init__(
+        self,
+        image_channels=3,
+        low_dim_state_dim=LOW_DIM_STATE_DIM,
+        action_dim=4,
+        image_size=(64, 64),
+        latent_dim=DEFAULT_FRCR_LATENT_DIM,
+        num_phase_bins=DEFAULT_FRCR_PHASE_BINS,
+        relation_dim=DEFAULT_FRCR_RELATION_DIM,
+        retrieval_topk=DEFAULT_FRCR_RETRIEVAL_TOPK,
+        perturb_scale=DEFAULT_FRCR_PERTURB_SCALE,
+        local_hidden_dim=DEFAULT_FRCR_LOCAL_HIDDEN_DIM,
+        separate_gripper_head=DEFAULT_FRCR_SEPARATE_GRIPPER_HEAD,
+    ):
+        super().__init__()
+        _require_fk_low_dim_state(low_dim_state_dim, self.__class__.__name__)
+
+        self.latent_dim = latent_dim
+        self.num_phase_bins = num_phase_bins
+        self.relation_dim = relation_dim
+        self.retrieval_topk = retrieval_topk
+        self.perturb_scale = perturb_scale
+        self.separate_gripper_head = separate_gripper_head
+
+        self.visual_encoder = CNNEncoder(
+            input_channels=image_channels,
+            output_dim=latent_dim,
+            image_size=image_size,
+        )
+        self.joint_encoder = MLPEncoder(
+            input_dim=NUM_ARM_JOINTS, hidden_dim=128, output_dim=128
+        )
+        self.ee_pos_encoder = MLPEncoder(
+            input_dim=EE_POS_DIM, hidden_dim=64, output_dim=64
+        )
+        self.ee_rot_encoder = MLPEncoder(
+            input_dim=EE_ROT6D_DIM, hidden_dim=128, output_dim=64
+        )
+        self.gripper_encoder = MLPEncoder(input_dim=1, hidden_dim=32, output_dim=32)
+
+        self.state_feature_dim = 128 + 64 + 64 + 32
+        self.phase_embed_dim = latent_dim // 4
+        self.relation_embed_dim = latent_dim // 4
+
+        self.shared_encoder = nn.Sequential(
+            nn.Linear(latent_dim + self.state_feature_dim, latent_dim),
+            nn.GELU(),
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, latent_dim),
+            nn.GELU(),
+            nn.LayerNorm(latent_dim),
+        )
+        self.phase_head = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim // 2),
+            nn.GELU(),
+            nn.Linear(latent_dim // 2, num_phase_bins),
+        )
+        self.phase_embedding = nn.Embedding(num_phase_bins, self.phase_embed_dim)
+        self.relation_trunk = nn.Sequential(
+            nn.Linear(latent_dim + self.state_feature_dim, latent_dim),
+            nn.GELU(),
+            nn.LayerNorm(latent_dim),
+        )
+        self.relation_head = nn.Linear(latent_dim, relation_dim)
+        self.relation_proj = nn.Sequential(
+            nn.Linear(relation_dim, self.relation_embed_dim),
+            nn.GELU(),
+            nn.LayerNorm(self.relation_embed_dim),
+        )
+
+        retrieval_input_dim = latent_dim + self.phase_embed_dim + self.relation_embed_dim
+        self.shared_query_proj = nn.Sequential(
+            nn.Linear(retrieval_input_dim, latent_dim),
+            nn.GELU(),
+            nn.LayerNorm(latent_dim),
+        )
+        self.shared_key_proj = nn.Sequential(
+            nn.Linear(retrieval_input_dim, latent_dim),
+            nn.GELU(),
+            nn.LayerNorm(latent_dim),
+        )
+        self.shared_value_proj = nn.Sequential(
+            nn.Linear(retrieval_input_dim, latent_dim),
+            nn.GELU(),
+            nn.LayerNorm(latent_dim),
+        )
+
+        self.local_adapter = nn.Sequential(
+            nn.Linear(latent_dim, local_hidden_dim),
+            nn.GELU(),
+            nn.Linear(local_hidden_dim, latent_dim),
+        )
+        self.local_recovery = nn.Sequential(
+            nn.Linear(latent_dim * 2, local_hidden_dim),
+            nn.GELU(),
+            nn.Linear(local_hidden_dim, latent_dim),
+        )
+
+        if self.separate_gripper_head:
+            arm_action_dim = action_dim - 1
+            if arm_action_dim <= 0:
+                raise ValueError(
+                    f"{self.__class__.__name__} requires action_dim >= 2 when "
+                    "separate_gripper_head=True."
+                )
+            self.global_arm_head = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim),
+                nn.GELU(),
+                nn.Linear(latent_dim, arm_action_dim),
+            )
+            self.local_arm_residual_head = nn.Sequential(
+                nn.Linear(latent_dim, local_hidden_dim),
+                nn.GELU(),
+                nn.Linear(local_hidden_dim, arm_action_dim),
+            )
+            self.global_gripper_head = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim // 2),
+                nn.GELU(),
+                nn.Linear(latent_dim // 2, 1),
+            )
+            self.local_gripper_residual_head = nn.Sequential(
+                nn.Linear(latent_dim, local_hidden_dim // 2),
+                nn.GELU(),
+                nn.Linear(local_hidden_dim // 2, 1),
+            )
+        else:
+            self.global_head = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim),
+                nn.GELU(),
+                nn.Linear(latent_dim, action_dim),
+            )
+            self.local_residual_head = nn.Sequential(
+                nn.Linear(latent_dim, local_hidden_dim),
+                nn.GELU(),
+                nn.Linear(local_hidden_dim, action_dim),
+            )
+
+    def federated_state_keys(self):
+        return [
+            key
+            for key in self.state_dict().keys()
+            if not key.startswith(self.LOCAL_STATE_PREFIXES)
+        ]
+
+    def _split_low_dim_state(self, low_dim_state):
+        joint_state = low_dim_state[..., :NUM_ARM_JOINTS]
+        ee_pos_state = low_dim_state[
+            ..., NUM_ARM_JOINTS : NUM_ARM_JOINTS + EE_POS_DIM
+        ]
+        ee_rot_state = low_dim_state[
+            ...,
+            NUM_ARM_JOINTS + EE_POS_DIM : NUM_ARM_JOINTS + EE_FEATURE_DIM,
+        ]
+        gripper_state = low_dim_state[..., -1:].contiguous()
+        return joint_state, ee_pos_state, ee_rot_state, gripper_state
+
+    def _encode_shared_state(self, image, low_dim_state):
+        joint_state, ee_pos_state, ee_rot_state, gripper_state = (
+            self._split_low_dim_state(low_dim_state)
+        )
+        visual_embedding = self.visual_encoder(image)
+        joint_embedding = self.joint_encoder(joint_state)
+        ee_pos_embedding = self.ee_pos_encoder(ee_pos_state)
+        ee_rot_embedding = self.ee_rot_encoder(ee_rot_state)
+        gripper_embedding = self.gripper_encoder(gripper_state)
+        state_embedding = torch.cat(
+            [
+                joint_embedding,
+                ee_pos_embedding,
+                ee_rot_embedding,
+                gripper_embedding,
+            ],
+            dim=-1,
+        )
+        shared_latent = self.shared_encoder(
+            torch.cat([visual_embedding, state_embedding], dim=-1)
+        )
+        return shared_latent, state_embedding, ee_pos_state, gripper_state
+
+    def _phase_embedding_from_logits(self, phase_logits):
+        phase_probs = torch.softmax(phase_logits, dim=-1)
+        return phase_probs @ self.phase_embedding.weight
+
+    def _build_relation_target(self, ee_pos_state, gripper_state, action_target):
+        relation_target = torch.cat(
+            [
+                ee_pos_state,
+                gripper_state,
+                action_target[..., :3],
+                action_target[..., -1:],
+            ],
+            dim=-1,
+        )
+        if relation_target.shape[-1] < self.relation_dim:
+            relation_target = F.pad(
+                relation_target,
+                (0, self.relation_dim - relation_target.shape[-1]),
+            )
+        return relation_target[..., : self.relation_dim]
+
+    def _phase_target_from_progress(self, progress):
+        progress = progress.reshape(-1).clamp(0.0, 0.999999)
+        phase_target = torch.floor(progress * self.num_phase_bins).long()
+        return phase_target.clamp_(max=self.num_phase_bins - 1)
+
+    def _retrieve_context(self, adapted_latent, phase_embedding, relation_embedding):
+        batch_size = adapted_latent.shape[0]
+        if batch_size <= 1:
+            zeros = torch.zeros_like(adapted_latent)
+            return zeros, adapted_latent, zeros
+
+        retrieval_input = torch.cat(
+            [adapted_latent, phase_embedding, relation_embedding], dim=-1
+        )
+        query = self.shared_query_proj(retrieval_input)
+        key = self.shared_key_proj(retrieval_input)
+        value = self.shared_value_proj(retrieval_input)
+
+        z_dist = torch.cdist(query, key).pow(2)
+        phase_dist = torch.cdist(phase_embedding, phase_embedding).pow(2)
+        relation_dist = torch.cdist(relation_embedding, relation_embedding).pow(2)
+        similarity = -(z_dist + 0.5 * phase_dist + 0.5 * relation_dist)
+        similarity.fill_diagonal_(-1e9)
+
+        topk = min(self.retrieval_topk, batch_size - 1)
+        topk_scores, topk_indices = torch.topk(similarity, k=topk, dim=-1)
+
+        gathered_values = torch.gather(
+            value.unsqueeze(0).expand(batch_size, -1, -1),
+            1,
+            topk_indices.unsqueeze(-1).expand(-1, -1, value.shape[-1]),
+        )
+        gathered_latents = torch.gather(
+            adapted_latent.unsqueeze(0).expand(batch_size, -1, -1),
+            1,
+            topk_indices.unsqueeze(-1).expand(-1, -1, adapted_latent.shape[-1]),
+        )
+
+        weights = torch.softmax(topk_scores / math.sqrt(query.shape[-1]), dim=-1)
+        context = torch.sum(gathered_values * weights.unsqueeze(-1), dim=1)
+        retrieved_latent = torch.sum(gathered_latents * weights.unsqueeze(-1), dim=1)
+        return context, retrieved_latent, weights
+
+    def forward(
+        self,
+        image,
+        low_dim_state,
+        return_aux=False,
+        progress=None,
+        action_target=None,
+    ):
+        shared_latent, state_embedding, ee_pos_state, gripper_state = (
+            self._encode_shared_state(image, low_dim_state)
+        )
+        phase_logits = self.phase_head(shared_latent)
+        phase_embedding = self._phase_embedding_from_logits(phase_logits)
+
+        relation_features = self.relation_trunk(
+            torch.cat([shared_latent, state_embedding], dim=-1)
+        )
+        relation_prediction = self.relation_head(relation_features)
+        relation_embedding = self.relation_proj(relation_prediction)
+
+        adapted_latent = shared_latent + self.local_adapter(shared_latent)
+        context, retrieved_latent, retrieval_weights = self._retrieve_context(
+            adapted_latent=adapted_latent,
+            phase_embedding=phase_embedding,
+            relation_embedding=relation_embedding,
+        )
+        corrected_latent = adapted_latent + self.local_recovery(
+            torch.cat([adapted_latent, context], dim=-1)
+        )
+
+        if self.separate_gripper_head:
+            nominal_arm_action = self.global_arm_head(corrected_latent)
+            local_arm_residual = self.local_arm_residual_head(corrected_latent)
+            arm_action = torch.tanh(nominal_arm_action + local_arm_residual)
+
+            gripper_logit = self.global_gripper_head(
+                corrected_latent
+            ) + self.local_gripper_residual_head(corrected_latent)
+            gripper_action = torch.sigmoid(gripper_logit)
+            action = torch.cat([arm_action, gripper_action], dim=-1)
+            local_residual_norm = (
+                local_arm_residual.norm(dim=-1).mean()
+                + self.local_gripper_residual_head(corrected_latent)
+                .norm(dim=-1)
+                .mean()
+            )
+        else:
+            nominal_action = self.global_head(corrected_latent)
+            local_residual = self.local_residual_head(corrected_latent)
+            action = torch.tanh(nominal_action + local_residual)
+            local_residual_norm = local_residual.norm(dim=-1).mean()
+
+        if not return_aux:
+            return action
+
+        aux = {
+            "phase_loss": corrected_latent.new_zeros(()),
+            "relation_loss": corrected_latent.new_zeros(()),
+            "retrieval_loss": F.mse_loss(
+                corrected_latent, retrieved_latent.detach()
+            ),
+            "recovery_loss": corrected_latent.new_zeros(()),
+            "smooth_loss": corrected_latent.new_zeros(()),
+            "retrieval_mean_weight": retrieval_weights.mean()
+            if retrieval_weights.numel() > 0
+            else corrected_latent.new_zeros(()),
+        }
+
+        if progress is not None:
+            phase_target = self._phase_target_from_progress(progress)
+            aux["phase_loss"] = F.cross_entropy(phase_logits, phase_target)
+
+        if action_target is not None:
+            relation_target = self._build_relation_target(
+                ee_pos_state=ee_pos_state,
+                gripper_state=gripper_state,
+                action_target=action_target,
+            )
+            aux["relation_loss"] = F.mse_loss(relation_prediction, relation_target)
+
+        perturbed_latent = adapted_latent + (
+            torch.randn_like(adapted_latent) * self.perturb_scale
+        )
+        recovered_latent = perturbed_latent + self.local_recovery(
+            torch.cat([perturbed_latent, context.detach()], dim=-1)
+        )
+        aux["recovery_loss"] = F.mse_loss(recovered_latent, retrieved_latent.detach())
+
+        base_distance = torch.norm(adapted_latent - retrieved_latent.detach(), dim=-1)
+        corrected_distance = torch.norm(
+            corrected_latent - retrieved_latent.detach(), dim=-1
+        )
+        aux["smooth_loss"] = F.relu(corrected_distance - 0.9 * base_distance).mean()
+        aux["shared_latent_norm"] = shared_latent.norm(dim=-1).mean()
+        aux["local_residual_norm"] = local_residual_norm
+        return action, aux
+
+
+class FRCRBCGripperPolicy(FRCRPolicy):
+    """BC-first FRCR variant with a separate gripper head."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("separate_gripper_head", True)
+        super().__init__(*args, **kwargs)
+
+
 POLICY_REGISTRY = {
     "fkbc": FKBCPolicy,
     "fk_camera_object": FKCameraObjectPolicy,
     "fk_dino_cached_head": FKDinoCachedHeadPolicy,
+    "frcr": FRCRPolicy,
+    "frcr_bc_gripper": FRCRBCGripperPolicy,
 }
 
 POLICY_NAME_BY_CLASS = {

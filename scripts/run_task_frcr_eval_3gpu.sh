@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export ELSA_POLICY_NAME="${ELSA_POLICY_NAME:-frcr}"
+export ELSA_DETERMINISTIC_TRAINING="${ELSA_DETERMINISTIC_TRAINING:-false}"
+export ELSA_ENABLE_CENTRALIZED_EVAL="${ELSA_ENABLE_CENTRALIZED_EVAL:-true}"
+export ELSA_CENTRALIZED_EVAL_SIMULATOR="${ELSA_CENTRALIZED_EVAL_SIMULATOR:-false}"
+
+exec "$SCRIPT_DIR/run_task_direct_3gpu.sh"

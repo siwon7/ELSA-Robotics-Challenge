@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export ELSA_POLICY_NAME="${ELSA_POLICY_NAME:-legacy_bc}"
+export ELSA_TASK="${ELSA_TASK:-close_box}"
+export ELSA_DATASET_CONFIG_PATH="${ELSA_DATASET_CONFIG_PATH:-dataset_config_legacy_bc_ee_pose.yaml}"
+export ELSA_DETERMINISTIC_TRAINING="${ELSA_DETERMINISTIC_TRAINING:-false}"
+export ELSA_ENABLE_CENTRALIZED_EVAL="${ELSA_ENABLE_CENTRALIZED_EVAL:-true}"
+export ELSA_CENTRALIZED_EVAL_SIMULATOR="${ELSA_CENTRALIZED_EVAL_SIMULATOR:-false}"
+export ELSA_ENABLE_CLIENT_LOCAL_STATE="${ELSA_ENABLE_CLIENT_LOCAL_STATE:-false}"
+export ELSA_SAVE_ROUNDS="${ELSA_SAVE_ROUNDS:-5,25,30}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+
+exec "$SCRIPT_DIR/run_task_direct_3gpu.sh"

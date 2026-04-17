@@ -2,23 +2,27 @@
 
 from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+from torch.utils.data import DataLoader
 from federated_elsa_robotics.policy_runtime import (
     DEFAULT_SEED,
     build_runtime_agent,
     get_runtime_policy_name,
     parse_bool,
+    resolve_run_config,
     set_global_seed,
 )
+from federated_elsa_robotics.eval_model import LEGACY_BC_POLICY_NAME, LegacyBCDataset
 from federated_elsa_robotics.strategies import build_strategy
 from federated_elsa_robotics.task import get_weights, set_weights, validate_one_epoch
 from omegaconf import OmegaConf
 import torch
 
+from elsa_learning_agent.dataset.compat import get_action_dim
 from elsa_learning_agent.kinematics import LOW_DIM_STATE_DIM
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 
 def gen_evaluate_fn(
-    testloader: list[ImitationDataset],
+    testloader: list[DataLoader],
     device: torch.device,
     net_args: dict,
     simulator: bool = False,
@@ -74,30 +78,35 @@ def train_aggregation_fn(metrics: list[dict]):
 
 def server_fn(context: Context):
     # Read from project toml config
-    num_rounds = context.run_config["num-server-rounds"]
-    fraction_fit = context.run_config["fraction-fit"]
-    fraction_evaluate = context.run_config["fraction-eval"]
-    server_device = context.run_config["server-device"]
-    use_wandb = context.run_config["use-wandb"]
-    dataset_config_path = context.run_config["dataset-config-path"]
-    strategy_name = context.run_config["strategy-name"]
+    run_config = resolve_run_config(context.run_config)
+    num_rounds = run_config["num-server-rounds"]
+    fraction_fit = run_config["fraction-fit"]
+    fraction_evaluate = run_config["fraction-eval"]
+    server_device = run_config["server-device"]
+    use_wandb = run_config["use-wandb"]
+    enable_centralized_eval = run_config.get("enable-centralized-eval", False)
+    centralized_eval_simulator = run_config.get("centralized-eval-simulator", False)
+    centralized_eval_batch_size = int(run_config.get("centralized-eval-batch-size", 32))
+    centralized_eval_num_workers = int(run_config.get("centralized-eval-num-workers", 8))
+    dataset_config_path = run_config["dataset-config-path"]
+    strategy_name = run_config["strategy-name"]
     conf = OmegaConf.load(dataset_config_path)
-    policy_name = get_runtime_policy_name(context.run_config, conf)
+    policy_name = get_runtime_policy_name(run_config, conf)
     conf.model.policy_name = policy_name
-    seed = int(context.run_config.get("seed", DEFAULT_SEED))
-    deterministic = parse_bool(context.run_config.get("deterministic-training", False))
+    seed = int(run_config.get("seed", DEFAULT_SEED))
+    deterministic = parse_bool(run_config.get("deterministic-training", False))
     set_global_seed(seed, deterministic)
     print(
         f"Starting server with strategy={strategy_name}, "
         f"policy={policy_name}, "
-        f"l-ep={context.run_config['local-epochs']}, "
-        f"ts={context.run_config['train-split']}, fclients={fraction_fit}"
+        f"l-ep={run_config['local-epochs']}, "
+        f"ts={run_config['train-split']}, fclients={fraction_fit}"
     )
 
     net_args = {
         "policy_name": policy_name,
         "image_size": (128, 128),
-        "action_dim": 8,
+        "action_dim": get_action_dim(conf),
         "low_dim_state_dim": LOW_DIM_STATE_DIM,
         "config": conf,
     }
@@ -110,20 +119,39 @@ def server_fn(context: Context):
     # Evaluation loader
     def create_config(idx): 
         cur_config = conf.copy()
-        cur_config.dataset.task = context.run_config["dataset-task"]
+        cur_config.dataset.task = run_config["dataset-task"]
         cur_config.dataset.env_id = idx
         # Use evaluation dataset for the server
         cur_config.dataset.root_dir = cur_config.dataset.root_eval_dir
         cur_config.dataset.test_split = 0.0
-        cur_config.dataset.train_split = context.run_config["train-split"]
+        cur_config.dataset.train_split = run_config["train-split"]
         cur_config.dataset.num_server_rounds = num_rounds
-        cur_config.dataset.local_epochs = context.run_config["local-epochs"]
-        cur_config.dataset.save_rounds = context.run_config.get("save-rounds", "5,25,50,100")
+        cur_config.dataset.local_epochs = run_config["local-epochs"]
+        cur_config.dataset.save_rounds = run_config.get("save-rounds", "5,25,50,100")
         return cur_config
     config = create_config(0)
-    # test_dataset = [
-    #         DataLoader(ImitationDataset(config=create_config(idx), test=True), batch_size=config.dataset["batch_size"], shuffle=False, num_workers=config.dataset["num_workers_server"])
-    #     for idx in range(*config.dataset["test_env_idx_range"])]
+    test_dataset = None
+    evaluate_fn = None
+    if enable_centralized_eval:
+        dataset_cls = (
+            LegacyBCDataset if policy_name == LEGACY_BC_POLICY_NAME else ImitationDataset
+        )
+        test_dataset = [
+            DataLoader(
+                dataset_cls(config=create_config(idx), test=True),
+                batch_size=centralized_eval_batch_size,
+                shuffle=False,
+                num_workers=centralized_eval_num_workers,
+            )
+            for idx in range(*config.dataset["test_env_idx_range"])
+        ]
+        evaluate_fn = gen_evaluate_fn(
+            test_dataset,
+            server_device,
+            net_args,
+            simulator=centralized_eval_simulator,
+            dataset_config=config,
+        )
     
     # Define strategy
     strategy = build_strategy(
@@ -135,8 +163,7 @@ def server_fn(context: Context):
         agent=agent,
         config=config,
         use_wandb=use_wandb,
-        # evaluate_fn=gen_evaluate_fn(test_dataset, server_device, net_args, simulator=config.dataset["enable_live_eval"], dataset_config=config),
-        # evaluate_metrics_aggregation_fn=
+        evaluate_fn=evaluate_fn,
         fit_aggregation_fn=train_aggregation_fn,
     )
     config = ServerConfig(num_rounds=num_rounds)

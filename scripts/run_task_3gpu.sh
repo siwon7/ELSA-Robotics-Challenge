@@ -24,8 +24,10 @@ export ELSA_FRACTION_FIT="${ELSA_FRACTION_FIT:-0.05}"
 export ELSA_FRACTION_EVAL="${ELSA_FRACTION_EVAL:-0.0025}"
 export ELSA_USE_WANDB="${ELSA_USE_WANDB:-true}"
 export ELSA_POLICY_NAME="${ELSA_POLICY_NAME:-fk_camera_object}"
+export ELSA_SERVER_DEVICE="${ELSA_SERVER_DEVICE:-cuda:0}"
 export ELSA_SEED="${ELSA_SEED:-0}"
 export ELSA_DETERMINISTIC_TRAINING="${ELSA_DETERMINISTIC_TRAINING:-false}"
+export ELSA_EXTRA_RUN_CONFIG="${ELSA_EXTRA_RUN_CONFIG:-}"
 FLOWER_CONFIG_PATH="$FLWR_HOME/config.toml"
 
 mkdir -p \
@@ -52,5 +54,9 @@ EOF
 
 source "$ROOT_DIR/.venv/bin/activate"
 cd "$ROOT_DIR"
+RUN_CONFIG="dataset-task=\"${ELSA_TASK}\" num-server-rounds=${ELSA_NUM_SERVER_ROUNDS} local-epochs=${ELSA_LOCAL_EPOCHS} fraction-fit=${ELSA_FRACTION_FIT} fraction-eval=${ELSA_FRACTION_EVAL} use-wandb=${ELSA_USE_WANDB} policy-name=\"${ELSA_POLICY_NAME}\" server-device=\"${ELSA_SERVER_DEVICE}\" seed=${ELSA_SEED} deterministic-training=${ELSA_DETERMINISTIC_TRAINING}"
+if [ -n "$ELSA_EXTRA_RUN_CONFIG" ]; then
+  RUN_CONFIG="${RUN_CONFIG} ${ELSA_EXTRA_RUN_CONFIG}"
+fi
 flwr run . --stream \
-  --run-config "dataset-task=\"${ELSA_TASK}\" num-server-rounds=${ELSA_NUM_SERVER_ROUNDS} local-epochs=${ELSA_LOCAL_EPOCHS} fraction-fit=${ELSA_FRACTION_FIT} fraction-eval=${ELSA_FRACTION_EVAL} use-wandb=${ELSA_USE_WANDB} policy-name=\"${ELSA_POLICY_NAME}\" seed=${ELSA_SEED} deterministic-training=${ELSA_DETERMINISTIC_TRAINING}"
+  --run-config "$RUN_CONFIG"
