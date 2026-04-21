@@ -29,6 +29,25 @@ def validate_runtime_config(config) -> dict:
     errors: list[str] = []
 
     vision_backbone = str(getattr(config.model, "vision_backbone", "cnn"))
+    use_adaln_head = bool(getattr(config.model, "use_adaln_head", False))
+    adaln_hidden_dim = int(getattr(config.model, "adaln_hidden_dim", 256) or 256)
+    adaln_conditioning_mode = str(
+        getattr(config.model, "adaln_conditioning_mode", "hybrid") or "hybrid"
+    )
+    use_dino_lora = bool(getattr(config.model, "use_dino_lora", False))
+    dino_lora_rank = int(getattr(config.model, "dino_lora_rank", 8) or 8)
+    dino_lora_alpha = float(getattr(config.model, "dino_lora_alpha", 16.0) or 16.0)
+    dino_lora_dropout = float(getattr(config.model, "dino_lora_dropout", 0.0) or 0.0)
+    dino_lora_num_blocks = int(getattr(config.model, "dino_lora_num_blocks", 0) or 0)
+    dino_lora_target_modules = str(
+        getattr(config.model, "dino_lora_target_modules", "qkv,proj") or "qkv,proj"
+    )
+    policy_head_type = str(getattr(config.model, "policy_head_type", "mlp") or "mlp")
+    diffusion_num_steps = int(getattr(config.model, "diffusion_num_steps", 20) or 20)
+    diffusion_hidden_dim = int(getattr(config.model, "diffusion_hidden_dim", 512) or 512)
+    diffusion_timestep_dim = int(
+        getattr(config.model, "diffusion_timestep_dim", 128) or 128
+    )
     spec = get_vision_backbone_spec(vision_backbone)
     if spec.dependency == "timm" and not _module_available("timm"):
         errors.append("vision_backbone requires `timm`, but it is not importable.")
@@ -39,6 +58,40 @@ def validate_runtime_config(config) -> dict:
             errors.append("vision_backbone requires `timm`, but it is not importable.")
         if not _module_available("transformers"):
             errors.append("vision_backbone requires `transformers`, but it is not importable.")
+    if adaln_hidden_dim <= 0:
+        errors.append("model.adaln_hidden_dim must be positive.")
+    if adaln_conditioning_mode not in {"proprio", "image", "hybrid"}:
+        errors.append(
+            "model.adaln_conditioning_mode must be one of "
+            "['proprio', 'image', 'hybrid']."
+        )
+    if policy_head_type not in {"mlp", "diffusion"}:
+        errors.append("model.policy_head_type must be one of ['mlp', 'diffusion'].")
+    if diffusion_num_steps <= 1:
+        errors.append("model.diffusion_num_steps must be greater than 1.")
+    if diffusion_hidden_dim <= 0:
+        errors.append("model.diffusion_hidden_dim must be positive.")
+    if diffusion_timestep_dim <= 0:
+        errors.append("model.diffusion_timestep_dim must be positive.")
+    if use_dino_lora:
+        if "dinov3" not in vision_backbone:
+            errors.append("model.use_dino_lora=true requires a DINOv3 vision_backbone.")
+        if dino_lora_rank <= 0:
+            errors.append("model.dino_lora_rank must be positive.")
+        if dino_lora_alpha <= 0:
+            errors.append("model.dino_lora_alpha must be positive.")
+        if dino_lora_dropout < 0.0:
+            errors.append("model.dino_lora_dropout must be non-negative.")
+        if dino_lora_num_blocks <= 0:
+            errors.append("model.dino_lora_num_blocks must be positive when LoRA is enabled.")
+        valid_targets = {"qkv", "proj"}
+        targets = {token.strip() for token in dino_lora_target_modules.split(",") if token.strip()}
+        if not targets:
+            errors.append("model.dino_lora_target_modules must not be empty.")
+        elif not targets.issubset(valid_targets):
+            errors.append(
+                "model.dino_lora_target_modules must be a comma-separated subset of ['qkv', 'proj']."
+            )
 
     action_pipeline_preset = get_action_pipeline_preset(config)
     action_representation = get_action_representation(config)
@@ -81,6 +134,19 @@ def validate_runtime_config(config) -> dict:
 
     return {
         "vision_backbone": vision_backbone,
+        "use_adaln_head": use_adaln_head,
+        "adaln_hidden_dim": adaln_hidden_dim,
+        "adaln_conditioning_mode": adaln_conditioning_mode,
+        "use_dino_lora": use_dino_lora,
+        "dino_lora_rank": dino_lora_rank,
+        "dino_lora_alpha": dino_lora_alpha,
+        "dino_lora_dropout": dino_lora_dropout,
+        "dino_lora_num_blocks": dino_lora_num_blocks,
+        "dino_lora_target_modules": dino_lora_target_modules,
+        "policy_head_type": policy_head_type,
+        "diffusion_num_steps": diffusion_num_steps,
+        "diffusion_hidden_dim": diffusion_hidden_dim,
+        "diffusion_timestep_dim": diffusion_timestep_dim,
         "supported_vision_backbones": get_supported_vision_backbones(),
         "action_pipeline_preset": action_pipeline_preset,
         "action_representation": action_representation,

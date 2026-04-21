@@ -15,9 +15,9 @@ from rlbench.action_modes.arm_action_modes import JointPosition, JointVelocity
 from rlbench.action_modes.gripper_action_modes import Discrete
 
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.utils import (
     denormalize_action,
-    get_action_output_activation,
     get_image_transform,
     load_environment,
     process_obs,
@@ -94,7 +94,7 @@ def load_agent(model_path: str, device: str, cfg):
         low_dim_state_dim=8,
         action_dim=8,
         image_size=(128, 128),
-        action_output_activation=get_action_output_activation(cfg),
+        **get_agent_model_kwargs(cfg),
     )
     state_dict = torch.load(model_path, map_location=torch.device(device))
     agent.policy.load_state_dict(state_dict)

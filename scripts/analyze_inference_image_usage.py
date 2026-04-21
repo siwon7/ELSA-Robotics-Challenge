@@ -8,9 +8,9 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.utils import (
-    get_action_output_activation,
     get_action_pipeline_preset,
     get_action_representation,
     get_execution_action_adapter,
@@ -70,15 +70,7 @@ def main():
         low_dim_state_dim=sample["low_dim_state"].shape[1],
         action_dim=sample["action"].shape[1],
         image_size=(sample["image"].shape[2], sample["image"].shape[3]),
-        vision_backbone=str(getattr(cfg.model, "vision_backbone", "cnn")),
-        projector_dim=int(getattr(cfg.model, "projector_dim", 256)),
-        action_output_activation=get_action_output_activation(cfg),
-        normalize_branch_embeddings=bool(
-            getattr(cfg.model, "normalize_branch_embeddings", False)
-        ),
-        low_dim_dropout_prob=float(
-            getattr(cfg.model, "low_dim_dropout_prob", 0.0) or 0.0
-        ),
+        **get_agent_model_kwargs(cfg),
     )
     state_dict = torch.load(args.model_path, map_location=device)
     agent.policy.load_state_dict(state_dict)
@@ -138,7 +130,7 @@ def main():
         "action_representation": str(get_action_representation(cfg)),
         "execution_action_interface": str(get_execution_action_interface(cfg)),
         "execution_action_adapter": str(get_execution_action_adapter(cfg)),
-        "action_output_activation": get_action_output_activation(cfg),
+        "action_output_activation": get_agent_model_kwargs(cfg)["action_output_activation"],
         "metrics": {
             "base_prediction": tensor_stats(torch.tensor(base_pred_std)),
             "zero_image_l2_delta": tensor_stats(torch.tensor(zero_image_deltas)),

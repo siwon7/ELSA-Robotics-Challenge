@@ -4,11 +4,10 @@ import os
 import torch
 
 from elsa_learning_agent.agent import Agent
-from elsa_learning_agent.config_utils import load_runtime_config
+from elsa_learning_agent.config_utils import get_agent_model_kwargs, load_runtime_config
 from elsa_learning_agent.dataset.dataset_loader_eval import EvalImitationDataset
 from elsa_learning_agent.utils import (
     denormalize_action,
-    get_action_output_activation,
     get_execution_action_adapter,
     get_execution_action_interface,
     get_joint_velocity_servo_clip,
@@ -108,15 +107,7 @@ def main(model_paths, model_config_path, predictions_path) -> int:
                 low_dim_state_dim=8,
                 action_dim=int(infer_action_dim(model_cfg)),
                 image_size=(128,128),
-                vision_backbone=str(getattr(model_cfg.model, "vision_backbone", "cnn")),
-                projector_dim=int(getattr(model_cfg.model, "projector_dim", 256)),
-                action_output_activation=get_action_output_activation(model_cfg),
-                normalize_branch_embeddings=bool(
-                    getattr(model_cfg.model, "normalize_branch_embeddings", False)
-                ),
-                low_dim_dropout_prob=float(
-                    getattr(model_cfg.model, "low_dim_dropout_prob", 0.0) or 0.0
-                ),
+                **get_agent_model_kwargs(model_cfg),
             )
             agent.policy.to(device)
 

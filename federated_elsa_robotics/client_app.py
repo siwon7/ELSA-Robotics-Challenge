@@ -16,12 +16,12 @@ from federated_elsa_robotics.task import (
     validate_one_epoch,
 )
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.config_validation import validate_runtime_config
 from elsa_learning_agent.dataset.path_utils import (
     available_env_ids,
     resolve_dataset_root,
 )
-from elsa_learning_agent.utils import get_action_output_activation
 from federated_elsa_robotics.fl_method_registry import resolve_prox_mu
 
 def resolve_torch_device(device_name: str) -> torch.device:
@@ -161,15 +161,7 @@ def client_fn(context: Context):
             low_dim_state_dim=sample["low_dim_state"].shape[1],
             action_dim=action_dim,
             image_size=(sample["image"].shape[2], sample["image"].shape[3]),
-            vision_backbone=str(getattr(config.model, "vision_backbone", "cnn")),
-            projector_dim=int(getattr(config.model, "projector_dim", 256)),
-            action_output_activation=get_action_output_activation(config),
-            normalize_branch_embeddings=bool(
-                getattr(config.model, "normalize_branch_embeddings", False)
-            ),
-            low_dim_dropout_prob=float(
-                getattr(config.model, "low_dim_dropout_prob", 0.0) or 0.0
-            ),
+            **get_agent_model_kwargs(config),
         )
     # Return Client instance
     return FlowerClient(

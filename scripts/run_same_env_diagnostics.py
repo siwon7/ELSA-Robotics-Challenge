@@ -9,7 +9,6 @@ import os
 import time
 from pathlib import Path
 
-import imageio.v2 as imageio
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -18,22 +17,21 @@ from torch.utils.data import DataLoader
 from elsa_learning_agent.agent import Agent
 from elsa_learning_agent.config_utils import (
     BASE_DATASET_CONFIG_PATH,
+    get_agent_model_kwargs,
     infer_checkpoint_config_path,
     load_runtime_config,
 )
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
+from elsa_learning_agent.live_rollout import load_task_environment, rollout_episode, save_gif
 from elsa_learning_agent.utils import (
     denormalize_action,
-    execute_action_with_adapter,
     expand_action_bounds,
-    get_action_output_activation,
     get_action_pipeline_preset,
     get_action_representation,
     get_execution_action_adapter,
     get_execution_action_interface,
     get_image_transform,
     get_receding_horizon_execute_steps,
-    load_environment,
     process_obs,
     select_receding_horizon_actions,
 )
@@ -60,15 +58,7 @@ def build_agent(cfg, sample, device: torch.device) -> Agent:
         low_dim_state_dim=int(sample["low_dim_state"].shape[1]),
         action_dim=int(sample["action"].shape[1]),
         image_size=(int(sample["image"].shape[2]), int(sample["image"].shape[3])),
-        vision_backbone=str(getattr(cfg.model, "vision_backbone", "cnn")),
-        projector_dim=int(getattr(cfg.model, "projector_dim", 256)),
-        action_output_activation=get_action_output_activation(cfg),
-        normalize_branch_embeddings=bool(
-            getattr(cfg.model, "normalize_branch_embeddings", False)
-        ),
-        low_dim_dropout_prob=float(
-            getattr(cfg.model, "low_dim_dropout_prob", 0.0) or 0.0
-        ),
+        **get_agent_model_kwargs(cfg),
     )
     agent.policy.to(device)
     return agent
@@ -136,61 +126,6 @@ def compute_image_usage(agent, loader, device, num_batches: int) -> dict:
     }
 
 
-def rollout_episode(
-    agent,
-    task_env,
-    transform,
-    device,
-    action_min,
-    action_max,
-    max_steps: int,
-    cfg,
-):
-    _descriptions, obs = task_env.reset()
-    frames = [np.asarray(obs.front_rgb, dtype=np.uint8)]
-    reward = 0.0
-    terminated = False
-    steps = 0
-
-    while not terminated and steps < max_steps:
-        front_rgb, low_dim_state = process_obs(obs, transform)
-        front_rgb = front_rgb.unsqueeze(0).to(device)
-        low_dim_state = low_dim_state.unsqueeze(0).to(device)
-
-        with torch.no_grad():
-            action = agent.get_action(front_rgb, low_dim_state)
-        expanded_action_min, expanded_action_max = expand_action_bounds(
-            action_min,
-            action_max,
-            int(action.shape[-1]),
-        )
-        denormalized_action = denormalize_action(
-            action.detach().cpu(), expanded_action_min, expanded_action_max
-        )
-        env_actions = select_receding_horizon_actions(denormalized_action, cfg)
-        for env_action in env_actions:
-            obs, step_reward, terminate, executed_steps, step_frames = execute_action_with_adapter(
-                task_env,
-                obs,
-                env_action.numpy()[0],
-                cfg,
-            )
-            frames.extend(step_frames)
-            reward = float(step_reward)
-            terminated = bool(terminate)
-            steps += int(executed_steps)
-            if terminated or steps >= max_steps:
-                break
-
-    return {
-        "reward": reward,
-        "terminated": terminated,
-        "success": bool(reward > 0.0),
-        "steps": steps,
-        "frames": frames,
-    }
-
-
 def collect_initial_actions(
     agent,
     task_env,
@@ -250,13 +185,7 @@ def evaluate_with_execute_steps(
     cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=False))
     cfg.dataset.receding_horizon_execute_steps = int(execute_steps)
 
-    collection_cfg_path = (
-        Path(str(cfg.dataset.root_dir)) / str(cfg.dataset.task) / f"{cfg.dataset.task}_fed.json"
-    )
-    with collection_cfg_path.open("r", encoding="utf-8") as fh:
-        collection_cfg = json.load(fh)
-
-    task_env, rlbench_env = load_environment(cfg, collection_cfg, env_id, headless=True)
+    task_env, rlbench_env = load_task_environment(cfg, env_id, headless=True)
     try:
         rewards = []
         for _ in range(episodes):
@@ -390,11 +319,7 @@ def main():
     base_cfg.dataset = cfg.dataset
     base_cfg.transform = cfg.transform
 
-    collection_cfg_path = Path(str(cfg.dataset.root_dir)) / str(cfg.dataset.task) / f"{cfg.dataset.task}_fed.json"
-    with collection_cfg_path.open("r", encoding="utf-8") as fh:
-        collection_cfg = json.load(fh)
-
-    task_env, rlbench_env = load_environment(base_cfg, collection_cfg, args.env_id, headless=True)
+    task_env, rlbench_env = load_task_environment(base_cfg, args.env_id, headless=True)
     try:
         action_min = torch.tensor(base_cfg.transform.action_min)
         action_max = torch.tensor(base_cfg.transform.action_max)
@@ -447,7 +372,7 @@ def main():
         "action_representation": str(get_action_representation(cfg)),
         "execution_action_interface": str(get_execution_action_interface(cfg)),
         "execution_action_adapter": str(get_execution_action_adapter(cfg)),
-        "action_output_activation": get_action_output_activation(cfg),
+        "action_output_activation": get_agent_model_kwargs(cfg)["action_output_activation"],
         "metrics": compute_image_usage(agent, val_loader, device, args.image_usage_batches),
     }
 
@@ -472,7 +397,7 @@ def main():
 
     video_payload = None
     if args.video_episodes > 0:
-        task_env, rlbench_env = load_environment(base_cfg, collection_cfg, args.env_id, headless=True)
+        task_env, rlbench_env = load_task_environment(base_cfg, args.env_id, headless=True)
         try:
             video_root = output_dir / f"videos_env{args.env_id}_{args.video_episodes}ep"
             env_video_dir = video_root / f"env_{args.env_id:03d}"
@@ -488,9 +413,10 @@ def main():
                     action_max,
                     args.max_steps,
                     base_cfg,
+                    capture_frames=True,
                 )
                 video_path = env_video_dir / f"episode_{episode_idx:03d}.gif"
-                imageio.mimsave(video_path, episode["frames"], fps=args.fps)
+                save_gif(video_path, episode["frames"], fps=args.fps)
                 video_results.append(
                     {
                         "episode_idx": episode_idx,

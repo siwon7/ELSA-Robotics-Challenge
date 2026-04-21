@@ -56,6 +56,19 @@ model:
   action_output_activation: ""
   normalize_branch_embeddings: false
   low_dim_dropout_prob: 0.0
+  use_adaln_head: false
+  adaln_hidden_dim: 256
+  adaln_conditioning_mode: hybrid
+  use_dino_lora: false
+  dino_lora_rank: 8
+  dino_lora_alpha: 16.0
+  dino_lora_dropout: 0.0
+  dino_lora_num_blocks: 0
+  dino_lora_target_modules: qkv,proj
+  policy_head_type: mlp
+  diffusion_num_steps: 20
+  diffusion_hidden_dim: 512
+  diffusion_timestep_dim: 128
 federated:
   # legacy_auto | fedavg | fedprox | fedprox_visual_shift
   method_preset: fedprox_visual_shift

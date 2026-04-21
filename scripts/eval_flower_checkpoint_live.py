@@ -9,11 +9,11 @@ import torch
 from elsa_learning_agent.agent import Agent
 from elsa_learning_agent.config_utils import (
     BASE_DATASET_CONFIG_PATH,
+    get_agent_model_kwargs,
     infer_checkpoint_config_path,
     load_runtime_config,
 )
 from elsa_learning_agent.utils import (
-    get_action_output_activation,
     get_action_pipeline_preset,
     get_action_representation,
     get_execution_action_adapter,
@@ -90,15 +90,7 @@ def main():
         low_dim_state_dim=8,
         action_dim=int(infer_action_dim(cfg)),
         image_size=(128, 128),
-        vision_backbone=str(getattr(cfg.model, "vision_backbone", "cnn")),
-        projector_dim=int(getattr(cfg.model, "projector_dim", 256)),
-        action_output_activation=get_action_output_activation(cfg),
-        normalize_branch_embeddings=bool(
-            getattr(cfg.model, "normalize_branch_embeddings", False)
-        ),
-        low_dim_dropout_prob=float(
-            getattr(cfg.model, "low_dim_dropout_prob", 0.0) or 0.0
-        ),
+        **get_agent_model_kwargs(cfg),
     )
     state_dict = torch.load(args.model_path, map_location=torch.device(args.device))
     agent.policy.load_state_dict(state_dict)

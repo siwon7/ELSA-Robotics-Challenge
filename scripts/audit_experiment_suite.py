@@ -11,13 +11,13 @@ import torch
 from omegaconf import OmegaConf
 
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.config_validation import validate_runtime_config
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.dataset.path_utils import (
     resolve_dataset_root,
     resolve_existing_env_id,
 )
-from elsa_learning_agent.utils import get_action_output_activation
 from federated_elsa_robotics.task import infer_action_dim
 
 
@@ -116,15 +116,7 @@ def audit_experiment(base_config_path: Path, experiment_path: Path, normalize: b
             low_dim_state_dim=int(low_dim_state.shape[1]),
             action_dim=int(action.shape[1]),
             image_size=(int(image.shape[2]), int(image.shape[3])),
-            vision_backbone=str(getattr(config.model, "vision_backbone", "cnn")),
-            projector_dim=int(getattr(config.model, "projector_dim", 256)),
-            action_output_activation=get_action_output_activation(config),
-            normalize_branch_embeddings=bool(
-                getattr(config.model, "normalize_branch_embeddings", False)
-            ),
-            low_dim_dropout_prob=float(
-                getattr(config.model, "low_dim_dropout_prob", 0.0) or 0.0
-            ),
+            **get_agent_model_kwargs(config),
         )
         agent.eval()
         with torch.no_grad():

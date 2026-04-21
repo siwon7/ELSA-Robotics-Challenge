@@ -16,8 +16,8 @@ import torch
 from typing import Optional, Union
 
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.config_validation import validate_runtime_config
-from elsa_learning_agent.utils import get_action_output_activation
 from federated_elsa_robotics.fl_method_registry import resolve_prox_mu
 
 
@@ -90,15 +90,7 @@ def server_fn(context: Context):
         "low_dim_state_dim": 8,
         "action_dim": int(conf.dataset.action_dim),
         "image_size": (128, 128),
-        "vision_backbone": str(getattr(conf.model, "vision_backbone", "cnn")),
-        "projector_dim": int(getattr(conf.model, "projector_dim", 256)),
-        "action_output_activation": get_action_output_activation(conf),
-        "normalize_branch_embeddings": bool(
-            getattr(conf.model, "normalize_branch_embeddings", False)
-        ),
-        "low_dim_dropout_prob": float(
-            getattr(conf.model, "low_dim_dropout_prob", 0.0) or 0.0
-        ),
+        **get_agent_model_kwargs(conf),
     }
 
     # Initialize model parameters

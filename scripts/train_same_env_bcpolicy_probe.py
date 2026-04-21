@@ -12,10 +12,10 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.utils import (
     get_action_chunk_len,
-    get_action_output_activation,
     get_action_pipeline_preset,
     get_action_representation,
     get_execution_action_adapter,
@@ -98,15 +98,7 @@ def main():
         low_dim_state_dim=sample["low_dim_state"].shape[1],
         action_dim=sample["action"].shape[1],
         image_size=(sample["image"].shape[2], sample["image"].shape[3]),
-        vision_backbone=str(getattr(cfg.model, "vision_backbone", "cnn")),
-        projector_dim=int(getattr(cfg.model, "projector_dim", 256)),
-        action_output_activation=get_action_output_activation(cfg),
-        normalize_branch_embeddings=bool(
-            getattr(cfg.model, "normalize_branch_embeddings", False)
-        ),
-        low_dim_dropout_prob=float(
-            getattr(cfg.model, "low_dim_dropout_prob", 0.0) or 0.0
-        ),
+        **get_agent_model_kwargs(cfg),
     )
 
     history = []
@@ -166,6 +158,14 @@ def main():
         "resolved_config_path": str(resolved_config_path),
         "vision_backbone": str(getattr(cfg.model, "vision_backbone", "cnn")),
         "projector_dim": int(getattr(cfg.model, "projector_dim", 256)),
+        "policy_head_type": str(getattr(cfg.model, "policy_head_type", "mlp")),
+        "diffusion_num_steps": int(getattr(cfg.model, "diffusion_num_steps", 20) or 20),
+        "diffusion_hidden_dim": int(
+            getattr(cfg.model, "diffusion_hidden_dim", 512) or 512
+        ),
+        "diffusion_timestep_dim": int(
+            getattr(cfg.model, "diffusion_timestep_dim", 128) or 128
+        ),
         "action_pipeline_preset": str(get_action_pipeline_preset(cfg)),
         "action_representation": str(get_action_representation(cfg)),
         "action_chunk_len": int(get_action_chunk_len(cfg)),

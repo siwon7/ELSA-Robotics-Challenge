@@ -7,6 +7,8 @@ CONFIG_PATH="${3:?config_path}"
 EPOCHS="${4:-50}"
 ENV_ID="${5:-0}"
 RUN_NAME="${6:?run_name}"
+EVAL_EPISODES="${7:-5}"
+SEED="${8:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -32,9 +34,10 @@ CUDA_VISIBLE_DEVICES="$GPU" "$PYTHON_BIN" "$REPO_ROOT/scripts/train_same_env_bcp
   --dataset-config-path "$CONFIG_PATH" \
   --env-id "$ENV_ID" \
   --epochs "$EPOCHS" \
-  --eval-episodes 5 \
+  --eval-episodes "$EVAL_EPISODES" \
   --device cuda:0 \
   --run-name "$RUN_NAME" \
+  --seed "$SEED" \
   --output-root "$RESULT_ROOT" \
   --checkpoint-root "$CKPT_ROOT" \
   2>&1 | tee "$LOG_PATH"

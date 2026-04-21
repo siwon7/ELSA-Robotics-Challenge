@@ -90,8 +90,7 @@ def train_one_epoch(
         action = batch["action"].to(device)
 
         optimizer.zero_grad()
-        predicted_action = agent.get_action(image, low_dim_state)
-        loss = criterion(predicted_action, action)
+        loss = agent.compute_loss(image, low_dim_state, action, criterion=criterion)
 
         total_objective = loss
         if prox_mu > 0.0 and global_trainable_params is not None:
