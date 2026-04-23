@@ -18,6 +18,7 @@ from elsa_learning_agent.dataset.path_utils import (
     resolve_dataset_root,
     resolve_existing_env_id,
 )
+from elsa_learning_agent.utils import move_nested_to_device
 from federated_elsa_robotics.task import infer_action_dim
 
 
@@ -111,6 +112,12 @@ def audit_experiment(base_config_path: Path, experiment_path: Path, normalize: b
         image = sample["image"].unsqueeze(0)
         low_dim_state = sample["low_dim_state"].unsqueeze(0)
         action = sample["action"].unsqueeze(0)
+        obs_context = move_nested_to_device(sample.get("obs_context"), "cpu")
+        if isinstance(obs_context, dict):
+            obs_context = {
+                key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
+                for key, value in obs_context.items()
+            }
         agent = Agent(
             image_channels=int(image.shape[1]),
             low_dim_state_dim=int(low_dim_state.shape[1]),
@@ -120,7 +127,7 @@ def audit_experiment(base_config_path: Path, experiment_path: Path, normalize: b
         )
         agent.eval()
         with torch.no_grad():
-            predicted = agent.get_action(image, low_dim_state)
+            predicted = agent.get_action(image, low_dim_state, obs_context=obs_context)
         return AuditResult(
             config=str(experiment_path),
             status="ok",

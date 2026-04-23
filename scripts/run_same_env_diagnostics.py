@@ -32,7 +32,10 @@ from elsa_learning_agent.utils import (
     get_execution_action_interface,
     get_image_transform,
     get_receding_horizon_execute_steps,
+    move_nested_to_device,
     process_obs,
+    process_obs_with_context,
+    requires_observation_context,
     select_receding_horizon_actions,
 )
 from federated_elsa_robotics.task import infer_action_dim, validate_one_epoch
@@ -88,16 +91,23 @@ def compute_image_usage(agent, loader, device, num_batches: int) -> dict:
                 break
             image = batch["image"].to(device)
             low_dim = batch["low_dim_state"].to(device)
+            obs_context = move_nested_to_device(batch.get("obs_context"), device)
 
-            pred = agent.policy(image, low_dim)
-            pred_zero_image = agent.policy(torch.zeros_like(image), low_dim)
-            pred_zero_state = agent.policy(image, torch.zeros_like(low_dim))
+            pred = agent.policy(image, low_dim, obs_context=obs_context)
+            pred_zero_image = agent.policy(torch.zeros_like(image), low_dim, obs_context=obs_context)
+            pred_zero_state = agent.policy(image, torch.zeros_like(low_dim), obs_context=obs_context)
 
             if image.shape[0] > 1:
                 image_perm = torch.randperm(image.shape[0], device=device)
                 low_dim_perm = torch.randperm(low_dim.shape[0], device=device)
-                pred_shuffle_image = agent.policy(image[image_perm], low_dim)
-                pred_shuffle_state = agent.policy(image, low_dim[low_dim_perm])
+                shuffled_context = None
+                if isinstance(obs_context, dict):
+                    shuffled_context = {
+                        key: value[image_perm] if torch.is_tensor(value) and value.shape[0] == image.shape[0] else value
+                        for key, value in obs_context.items()
+                    }
+                pred_shuffle_image = agent.policy(image[image_perm], low_dim, obs_context=shuffled_context or obs_context)
+                pred_shuffle_state = agent.policy(image, low_dim[low_dim_perm], obs_context=obs_context)
             else:
                 pred_shuffle_image = pred.clone()
                 pred_shuffle_state = pred.clone()
@@ -109,7 +119,9 @@ def compute_image_usage(agent, loader, device, num_batches: int) -> dict:
             base_pred_std.append(pred.std(dim=0, unbiased=False).mean().item())
             saturation_fractions.append((pred.abs() > 0.99).float().mean().item())
 
-            image_embed = agent.policy.cnn_encoder(image)
+            image_embed = agent.policy.cnn_encoder(image, obs_context) if requires_observation_context(loader.dataset.config) else agent.policy.cnn_encoder(image)
+            if isinstance(image_embed, dict):
+                image_embed = image_embed["global_embedding"]
             state_embed = agent.policy.mlp_encoder(low_dim)
             image_embed_norms.append(image_embed.norm(dim=-1).mean().item())
             state_embed_norms.append(state_embed.norm(dim=-1).mean().item())
@@ -140,11 +152,20 @@ def collect_initial_actions(
     with torch.no_grad():
         for episode_idx in range(episodes):
             _descriptions, obs = task_env.reset()
-            front_rgb, low_dim_state = process_obs(obs, transform)
+            if requires_observation_context(cfg):
+                front_rgb, low_dim_state, obs_context = process_obs_with_context(obs, transform)
+                obs_context = {
+                    key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
+                    for key, value in obs_context.items()
+                }
+                obs_context = move_nested_to_device(obs_context, device)
+            else:
+                front_rgb, low_dim_state = process_obs(obs, transform)
+                obs_context = None
             front_rgb = front_rgb.unsqueeze(0).to(device)
             low_dim_state = low_dim_state.unsqueeze(0).to(device)
 
-            pred = agent.get_action(front_rgb, low_dim_state)
+            pred = agent.get_action(front_rgb, low_dim_state, obs_context=obs_context)
             expanded_action_min, expanded_action_max = expand_action_bounds(
                 action_min,
                 action_max,

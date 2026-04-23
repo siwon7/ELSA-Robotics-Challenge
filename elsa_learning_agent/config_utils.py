@@ -100,4 +100,33 @@ def get_agent_model_kwargs(config) -> dict:
         "diffusion_timestep_dim": int(
             getattr(config.model, "diffusion_timestep_dim", 128) or 128
         ),
+        "volumedp_volume_bounds": list(
+            getattr(
+                config.model,
+                "volumedp_volume_bounds",
+                [-0.45, -0.55, 0.70, 0.45, 0.55, 1.35],
+            )
+            or [-0.45, -0.55, 0.70, 0.45, 0.55, 1.35]
+        ),
+        "volumedp_grid_shape": list(
+            getattr(config.model, "volumedp_grid_shape", [8, 8, 8]) or [8, 8, 8]
+        ),
+        "volumedp_num_spatial_tokens": int(
+            getattr(config.model, "volumedp_num_spatial_tokens", 32) or 32
+        ),
+        "volumedp_decoder_layers": int(
+            getattr(config.model, "volumedp_decoder_layers", 2) or 2
+        ),
+        "volumedp_decoder_heads": int(
+            getattr(config.model, "volumedp_decoder_heads", 4) or 4
+        ),
+        "volumedp_action_token_dim": int(
+            getattr(config.model, "volumedp_action_token_dim", 8) or 8
+        ),
+        "proprio_visual_fusion_mode": str(
+            getattr(config.model, "proprio_visual_fusion_mode", "token") or "token"
+        ),
+        "proprio_visual_fusion_hidden_dim": int(
+            getattr(config.model, "proprio_visual_fusion_hidden_dim", 256) or 256
+        ),
     }

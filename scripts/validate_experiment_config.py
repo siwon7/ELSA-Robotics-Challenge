@@ -14,6 +14,7 @@ from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.config_validation import validate_runtime_config
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.dataset.path_utils import resolve_dataset_root
+from elsa_learning_agent.utils import move_nested_to_device
 from federated_elsa_robotics.task import infer_action_dim
 
 
@@ -74,6 +75,12 @@ def main():
     image = sample["image"].unsqueeze(0)
     low_dim_state = sample["low_dim_state"].unsqueeze(0)
     action = sample["action"].unsqueeze(0)
+    obs_context = move_nested_to_device(sample.get("obs_context"), "cpu")
+    if isinstance(obs_context, dict):
+        obs_context = {
+            key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
+            for key, value in obs_context.items()
+        }
 
     agent = Agent(
         image_channels=int(image.shape[1]),
@@ -84,7 +91,7 @@ def main():
     )
     agent.eval()
     with torch.no_grad():
-        predicted = agent.get_action(image, low_dim_state)
+        predicted = agent.get_action(image, low_dim_state, obs_context=obs_context)
 
     report = {
         "config": args.config,
@@ -97,6 +104,7 @@ def main():
         "low_dim_shape": list(low_dim_state.shape),
         "action_shape": list(action.shape),
         "predicted_shape": list(predicted.shape),
+        "has_obs_context": bool(obs_context),
         "validation_summary": summary,
     }
     print(json.dumps(report, indent=2))

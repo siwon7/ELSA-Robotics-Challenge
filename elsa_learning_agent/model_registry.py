@@ -46,6 +46,22 @@ VISION_BACKBONE_REGISTRY: dict[str, VisionBackboneSpec] = {
         trainable_parts="both projectors + policy head only",
         notes="Higher-capacity visual stack. Use after the DINO-only baseline is stable.",
     ),
+    "volumedp_lite_dinov3_vits16": VisionBackboneSpec(
+        name="volumedp_lite_dinov3_vits16",
+        display_name="VolumeDP-lite with DINOv3 ViT-S/16",
+        dependency="timm",
+        upstream_source="timm pretrained vit_small_patch16_dinov3 + local volumetric token module",
+        trainable_parts="DINO LoRA/projectors + volumetric token module + policy head",
+        notes="Practical VolumeDP-style path using camera intrinsics/extrinsics and projected voxel tokens.",
+    ),
+    "volumedp_lite_camerafree_dinov3_vits16": VisionBackboneSpec(
+        name="volumedp_lite_camerafree_dinov3_vits16",
+        display_name="Camera-free VolumeDP-lite with DINOv3 ViT-S/16",
+        dependency="timm",
+        upstream_source="timm pretrained vit_small_patch16_dinov3 + local spatial token module",
+        trainable_parts="DINO LoRA/projectors + spatial token module + policy head",
+        notes="Benchmark-friendly variant without camera calibration. Uses DINO patch tokens and a proprio token in the decoder.",
+    ),
 }
 
 

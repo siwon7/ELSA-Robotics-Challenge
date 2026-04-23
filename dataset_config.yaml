@@ -69,6 +69,14 @@ model:
   diffusion_num_steps: 20
   diffusion_hidden_dim: 512
   diffusion_timestep_dim: 128
+  volumedp_volume_bounds: [-0.45, -0.55, 0.70, 0.45, 0.55, 1.35]
+  volumedp_grid_shape: [8, 8, 8]
+  volumedp_num_spatial_tokens: 32
+  volumedp_decoder_layers: 2
+  volumedp_decoder_heads: 4
+  volumedp_action_token_dim: 8
+  proprio_visual_fusion_mode: token
+  proprio_visual_fusion_hidden_dim: 256
 federated:
   # legacy_auto | fedavg | fedprox | fedprox_visual_shift
   method_preset: fedprox_visual_shift

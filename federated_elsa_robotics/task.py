@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.agent import Agent
+from elsa_learning_agent.utils import move_nested_to_device
 
 
 def load_data_colosseum(partition_id: int, num_partitions: int, train_split : float = 0.9, config: dict = None):
@@ -88,9 +89,16 @@ def train_one_epoch(
         image = batch["image"].to(device)
         low_dim_state = batch["low_dim_state"].to(device)
         action = batch["action"].to(device)
+        obs_context = move_nested_to_device(batch.get("obs_context"), device)
 
         optimizer.zero_grad()
-        loss = agent.compute_loss(image, low_dim_state, action, criterion=criterion)
+        loss = agent.compute_loss(
+            image,
+            low_dim_state,
+            action,
+            criterion=criterion,
+            obs_context=obs_context,
+        )
 
         total_objective = loss
         if prox_mu > 0.0 and global_trainable_params is not None:
@@ -120,8 +128,9 @@ def validate_one_epoch(agent:Agent, val_loader, device):
             image = batch["image"].to(device)
             low_dim_state = batch["low_dim_state"].to(device)
             action = batch["action"].to(device)
+            obs_context = move_nested_to_device(batch.get("obs_context"), device)
 
-            predicted_action = agent.get_action(image, low_dim_state)
+            predicted_action = agent.get_action(image, low_dim_state, obs_context=obs_context)
             loss = criterion(predicted_action, action)
 
             total_loss += loss.item()

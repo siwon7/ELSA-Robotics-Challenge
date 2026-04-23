@@ -430,3 +430,66 @@ bash scripts/run_same_env_config_one_task.sh \
 특히 다음 결과가 생기면 바로 이 문서에 추가한다.
 - `close_sameenv_dino_depth_diffusion_lora4_jvdirect_v1_e50_s0`
 - `scoop_sameenv_dino_depth_diffusion_lora4_jvdirect_v1_e100_s0`
+
+## 13. 2026-04-22 same-env env-sweep
+
+목적:
+- `env0` 단일 결과만으로는 편차를 보기 부족해서, `env0..3`의 same-env 평균 SR을 측정
+- 현재 best config인 `DINO+Depth + diffusion + JV + LoRA8, 50ep, 20ep eval`을 그대로 사용
+
+config:
+- `/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml`
+
+launcher:
+- `/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/scripts/start_same_env_task_envsweep_tmux.sh`
+- `/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/scripts/collect_same_env_task_envsweep_results.py`
+
+### close_box wave
+
+tmux session:
+- `same_env_envsweep_close_v1`
+
+run prefix:
+- `dino_depth_diffusion_lora8_jv_envsweep_close_v1`
+
+env ids:
+- `0 1 2 3`
+
+실행 command:
+
+```bash
+EPOCHS=50 EVAL_EPISODES=20 SEED=0 ENV_IDS="0 1 2 3" GPUS="0 1 2 3" \
+  bash scripts/start_same_env_task_envsweep_tmux.sh \
+  close_box \
+  experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml \
+  dino_depth_diffusion_lora8_jv_envsweep_close_v1 \
+  same_env_envsweep_close_v1
+```
+
+예상 결과 경로:
+- `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/same_env_suite/close_box/close_box_dino_depth_diffusion_lora8_jv_envsweep_close_v1_env0_e50_s0/env_000/result.json`
+- `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/same_env_suite/close_box/close_box_dino_depth_diffusion_lora8_jv_envsweep_close_v1_env1_e50_s0/env_001/result.json`
+- `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/same_env_suite/close_box/close_box_dino_depth_diffusion_lora8_jv_envsweep_close_v1_env2_e50_s0/env_002/result.json`
+- `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/same_env_suite/close_box/close_box_dino_depth_diffusion_lora8_jv_envsweep_close_v1_env3_e50_s0/env_003/result.json`
+
+### slide_block_to_target follow-up wave
+
+tmux session:
+- `same_env_envsweep_slide_v1`
+
+run prefix:
+- `dino_depth_diffusion_lora8_jv_envsweep_slide_v1`
+
+trigger:
+- `close_box env0..3` result 파일이 전부 생기면 자동 시작
+
+실행 command:
+
+```bash
+EPOCHS=50 EVAL_EPISODES=20 SEED=0 ENV_IDS="0 1 2 3" GPUS="0 1 2 3" \
+  bash scripts/start_same_env_task_envsweep_tmux.sh \
+  slide_block_to_target \
+  experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml \
+  dino_depth_diffusion_lora8_jv_envsweep_slide_v1 \
+  same_env_envsweep_slide_v1
+```

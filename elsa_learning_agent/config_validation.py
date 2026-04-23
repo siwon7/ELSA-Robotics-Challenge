@@ -48,6 +48,35 @@ def validate_runtime_config(config) -> dict:
     diffusion_timestep_dim = int(
         getattr(config.model, "diffusion_timestep_dim", 128) or 128
     )
+    volumedp_volume_bounds = list(
+        getattr(
+            config.model,
+            "volumedp_volume_bounds",
+            [-0.45, -0.55, 0.70, 0.45, 0.55, 1.35],
+        )
+        or [-0.45, -0.55, 0.70, 0.45, 0.55, 1.35]
+    )
+    volumedp_grid_shape = list(
+        getattr(config.model, "volumedp_grid_shape", [8, 8, 8]) or [8, 8, 8]
+    )
+    volumedp_num_spatial_tokens = int(
+        getattr(config.model, "volumedp_num_spatial_tokens", 32) or 32
+    )
+    volumedp_decoder_layers = int(
+        getattr(config.model, "volumedp_decoder_layers", 2) or 2
+    )
+    volumedp_decoder_heads = int(
+        getattr(config.model, "volumedp_decoder_heads", 4) or 4
+    )
+    volumedp_action_token_dim = int(
+        getattr(config.model, "volumedp_action_token_dim", 8) or 8
+    )
+    proprio_visual_fusion_mode = str(
+        getattr(config.model, "proprio_visual_fusion_mode", "token") or "token"
+    )
+    proprio_visual_fusion_hidden_dim = int(
+        getattr(config.model, "proprio_visual_fusion_hidden_dim", 256) or 256
+    )
     spec = get_vision_backbone_spec(vision_backbone)
     if spec.dependency == "timm" and not _module_available("timm"):
         errors.append("vision_backbone requires `timm`, but it is not importable.")
@@ -67,12 +96,42 @@ def validate_runtime_config(config) -> dict:
         )
     if policy_head_type not in {"mlp", "diffusion"}:
         errors.append("model.policy_head_type must be one of ['mlp', 'diffusion'].")
+    if proprio_visual_fusion_mode not in {
+        "none",
+        "token",
+        "global_film",
+        "token_film",
+        "global_token_film",
+    }:
+        errors.append(
+            "model.proprio_visual_fusion_mode must be one of "
+            "['none', 'token', 'global_film', 'token_film', 'global_token_film']."
+        )
+    if proprio_visual_fusion_hidden_dim <= 0:
+        errors.append("model.proprio_visual_fusion_hidden_dim must be positive.")
     if diffusion_num_steps <= 1:
         errors.append("model.diffusion_num_steps must be greater than 1.")
     if diffusion_hidden_dim <= 0:
         errors.append("model.diffusion_hidden_dim must be positive.")
     if diffusion_timestep_dim <= 0:
         errors.append("model.diffusion_timestep_dim must be positive.")
+    if vision_backbone.startswith("volumedp_lite"):
+        if policy_head_type != "diffusion":
+            errors.append("VolumeDP-lite vision_backbone requires model.policy_head_type='diffusion'.")
+        if len(volumedp_volume_bounds) != 6:
+            errors.append("model.volumedp_volume_bounds must contain 6 floats.")
+        if len(volumedp_grid_shape) != 3:
+            errors.append("model.volumedp_grid_shape must contain 3 ints.")
+        elif any(int(value) <= 0 for value in volumedp_grid_shape):
+            errors.append("model.volumedp_grid_shape values must be positive.")
+        if volumedp_num_spatial_tokens <= 0:
+            errors.append("model.volumedp_num_spatial_tokens must be positive.")
+        if volumedp_decoder_layers <= 0:
+            errors.append("model.volumedp_decoder_layers must be positive.")
+        if volumedp_decoder_heads <= 0:
+            errors.append("model.volumedp_decoder_heads must be positive.")
+        if volumedp_action_token_dim <= 0:
+            errors.append("model.volumedp_action_token_dim must be positive.")
     if use_dino_lora:
         if "dinov3" not in vision_backbone:
             errors.append("model.use_dino_lora=true requires a DINOv3 vision_backbone.")
@@ -147,6 +206,14 @@ def validate_runtime_config(config) -> dict:
         "diffusion_num_steps": diffusion_num_steps,
         "diffusion_hidden_dim": diffusion_hidden_dim,
         "diffusion_timestep_dim": diffusion_timestep_dim,
+        "volumedp_volume_bounds": volumedp_volume_bounds,
+        "volumedp_grid_shape": volumedp_grid_shape,
+        "volumedp_num_spatial_tokens": volumedp_num_spatial_tokens,
+        "volumedp_decoder_layers": volumedp_decoder_layers,
+        "volumedp_decoder_heads": volumedp_decoder_heads,
+        "volumedp_action_token_dim": volumedp_action_token_dim,
+        "proprio_visual_fusion_mode": proprio_visual_fusion_mode,
+        "proprio_visual_fusion_hidden_dim": proprio_visual_fusion_hidden_dim,
         "supported_vision_backbones": get_supported_vision_backbones(),
         "action_pipeline_preset": action_pipeline_preset,
         "action_representation": action_representation,

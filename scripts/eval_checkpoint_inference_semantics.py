@@ -20,7 +20,10 @@ from elsa_learning_agent.utils import (
     denormalize_action,
     get_image_transform,
     load_environment,
+    move_nested_to_device,
     process_obs,
+    process_obs_with_context,
+    requires_observation_context,
 )
 from scripts.live_eval_common import load_main_split_cfg
 
@@ -109,11 +112,20 @@ def run_eval_episode(agent, task_env, transform, device: str, mode: str, dt: flo
     terminated = False
     steps = 0
     while not terminated and steps < max_steps:
-        front_rgb, low_dim_state = process_obs(obs, transform)
+        if requires_observation_context(cfg):
+            front_rgb, low_dim_state, obs_context = process_obs_with_context(obs, transform)
+            obs_context = {
+                key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
+                for key, value in obs_context.items()
+            }
+            obs_context = move_nested_to_device(obs_context, device)
+        else:
+            front_rgb, low_dim_state = process_obs(obs, transform)
+            obs_context = None
         front_rgb = front_rgb.unsqueeze(0).to(device)
         low_dim_state = low_dim_state.unsqueeze(0).to(device)
         with torch.no_grad():
-            pred = agent.get_action(front_rgb, low_dim_state)
+            pred = agent.get_action(front_rgb, low_dim_state, obs_context=obs_context)
         action = denormalize_action(
             pred.detach().cpu(),
             torch.tensor([-1.0] * 7 + [0.0]),

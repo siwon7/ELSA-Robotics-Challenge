@@ -17,7 +17,10 @@ from elsa_learning_agent.utils import (
     execute_action_with_adapter,
     expand_action_bounds,
     load_environment,
+    move_nested_to_device,
     process_obs,
+    process_obs_with_context,
+    requires_observation_context,
     select_receding_horizon_actions,
 )
 
@@ -54,14 +57,26 @@ def rollout_episode(
     reward = 0.0
     terminated = False
     steps = 0
+    needs_obs_context = requires_observation_context(cfg) or str(
+        getattr(getattr(agent, "policy", None), "vision_backbone", "") or ""
+    ) == "volumedp_lite_dinov3_vits16"
 
     while not terminated and steps < max_steps:
-        front_rgb, low_dim_state = process_obs(obs, transform)
+        if needs_obs_context:
+            front_rgb, low_dim_state, obs_context = process_obs_with_context(obs, transform)
+            obs_context = {
+                key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
+                for key, value in obs_context.items()
+            }
+        else:
+            front_rgb, low_dim_state = process_obs(obs, transform)
+            obs_context = None
         front_rgb = front_rgb.unsqueeze(0).to(device)
         low_dim_state = low_dim_state.unsqueeze(0).to(device)
+        obs_context = move_nested_to_device(obs_context, device)
 
         with torch.no_grad():
-            action = agent.get_action(front_rgb, low_dim_state)
+            action = agent.get_action(front_rgb, low_dim_state, obs_context=obs_context)
         expanded_action_min, expanded_action_max = expand_action_bounds(
             action_min,
             action_max,

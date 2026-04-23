@@ -7,9 +7,11 @@ from tqdm import tqdm
 
 from elsa_learning_agent.utils import (
     process_obs,
+    process_obs_with_context,
     normalize_action,
     get_image_transform,
     get_action_representation,
+    requires_observation_context,
 )
 from elsa_learning_agent.dataset.compat import load_pickled_data
 from elsa_learning_agent.dataset.keypoint_discovery import (
@@ -20,6 +22,7 @@ from elsa_learning_agent.dataset.keypoint_discovery import (
 
 class ImitationDataset(Dataset):
     def __init__(self, config, train=False, test=False, normalize=False):
+        self.config = config
         self.root_dir = config.dataset.root_dir
         task = config.dataset.task
         env_id = config.dataset.env_id
@@ -58,6 +61,7 @@ class ImitationDataset(Dataset):
             demos_raw_data = demos_raw_data[split_index:]
 
         self.transform = get_image_transform(config)
+        self._include_obs_context = requires_observation_context(config)
         self.data = []
         self.demos_idx = []
 
@@ -135,7 +139,14 @@ class ImitationDataset(Dataset):
 
     def _load_datapoint(self, trajectory, time_step, keypoints=None):
         obs = trajectory[time_step]
-        front_image, low_dim_state = process_obs(obs, self.transform)
+        if self._include_obs_context:
+            front_image, low_dim_state, obs_context = process_obs_with_context(
+                obs,
+                self.transform,
+            )
+        else:
+            front_image, low_dim_state = process_obs(obs, self.transform)
+            obs_context = None
         action_seq = [
             self._build_single_action(
                 trajectory,
@@ -155,11 +166,14 @@ class ImitationDataset(Dataset):
             action_min = self.action_min.repeat(repeat_factor)
             action_max = self.action_max.repeat(repeat_factor)
             action = normalize_action(action, action_min, action_max)
-        return {
+        datapoint = {
             "action": action,
             "low_dim_state": low_dim_state,
             "image": front_image,
         }
+        if obs_context is not None:
+            datapoint["obs_context"] = obs_context
+        return datapoint
 
     def __len__(self):
         return len(self.data)

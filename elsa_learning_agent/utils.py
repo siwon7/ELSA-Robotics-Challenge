@@ -269,6 +269,53 @@ def get_image_transform(config_file):
     
     return transform
 
+def requires_observation_context(config) -> bool:
+    model_cfg = getattr(config, "model", None)
+    vision_backbone = str(getattr(model_cfg, "vision_backbone", "cnn") or "cnn")
+    return vision_backbone == "volumedp_lite_dinov3_vits16"
+
+def extract_obs_context(obs):
+    misc = getattr(obs, "misc", {}) or {}
+    context = {}
+
+    front_depth = getattr(obs, "front_depth", None)
+    if front_depth is not None:
+        front_depth = np.asarray(front_depth, dtype=np.float32)
+        if front_depth.ndim == 2:
+            front_depth = front_depth[None, ...]
+        context["front_depth"] = torch.tensor(front_depth, dtype=torch.float32)
+
+    front_point_cloud = getattr(obs, "front_point_cloud", None)
+    if front_point_cloud is not None:
+        front_point_cloud = np.asarray(front_point_cloud, dtype=np.float32)
+        if front_point_cloud.ndim == 3:
+            front_point_cloud = np.transpose(front_point_cloud, (2, 0, 1))
+        context["front_point_cloud"] = torch.tensor(front_point_cloud, dtype=torch.float32)
+
+    intrinsics = misc.get("front_camera_intrinsics")
+    if intrinsics is not None:
+        context["front_camera_intrinsics"] = torch.tensor(
+            np.asarray(intrinsics, dtype=np.float32),
+            dtype=torch.float32,
+        )
+
+    extrinsics = misc.get("front_camera_extrinsics")
+    if extrinsics is not None:
+        context["front_camera_extrinsics"] = torch.tensor(
+            np.asarray(extrinsics, dtype=np.float32),
+            dtype=torch.float32,
+        )
+
+    near = misc.get("front_camera_near")
+    if near is not None:
+        context["front_camera_near"] = torch.tensor(float(near), dtype=torch.float32)
+
+    far = misc.get("front_camera_far")
+    if far is not None:
+        context["front_camera_far"] = torch.tensor(float(far), dtype=torch.float32)
+
+    return context
+
 def process_obs(obs, transform=None):
     # invert axis from rgb to bgr
     front_image = torch.tensor(obs.front_rgb, dtype=torch.float32).permute(2, 0, 1)/255
@@ -278,6 +325,21 @@ def process_obs(obs, transform=None):
     low_dim_state = torch.tensor(np.concatenate((obs.joint_positions, np.array([obs.gripper_open]))), dtype=torch.float32)
 
     return front_image, low_dim_state
+
+def process_obs_with_context(obs, transform=None):
+    front_image, low_dim_state = process_obs(obs, transform)
+    return front_image, low_dim_state, extract_obs_context(obs)
+
+def move_nested_to_device(value, device):
+    if value is None:
+        return None
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, dict):
+        return {key: move_nested_to_device(sub_value, device) for key, sub_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(move_nested_to_device(sub_value, device) for sub_value in value)
+    return value
 
 def reverse_process_image(image):
     image = (image * 0.5) + 0.5
