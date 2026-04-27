@@ -25,7 +25,12 @@ class ImitationDataset(Dataset):
         self.config = config
         self.root_dir = config.dataset.root_dir
         task = config.dataset.task
-        env_id = config.dataset.env_id
+        env_ids_cfg = getattr(config.dataset, "env_ids", None)
+        if env_ids_cfg:
+            env_ids = [int(env_id) for env_id in env_ids_cfg]
+        else:
+            env_ids = [int(config.dataset.env_id)]
+        self.env_ids = env_ids
         train_split = float(
             getattr(
                 config.dataset,
@@ -47,34 +52,40 @@ class ImitationDataset(Dataset):
         self._action_keyframe_stopped_buffer_steps = int(
             getattr(config.dataset, "action_keyframe_stopped_buffer_steps", 4) or 4
         )
-        data_path = os.path.join(self.root_dir, f"{task}", f"env_{env_id}", "episodes_observations.pkl.gz")
-        
-        demos_raw_data = load_pickled_data(data_path)
         self.normalize = normalize
         self.action_min = torch.tensor(config.transform.action_min)
         self.action_max = torch.tensor(config.transform.action_max)
-
-        split_index = int(train_split * len(demos_raw_data))
-        if train:
-            demos_raw_data = demos_raw_data[:split_index]
-        elif test:
-            demos_raw_data = demos_raw_data[split_index:]
 
         self.transform = get_image_transform(config)
         self._include_obs_context = requires_observation_context(config)
         self.data = []
         self.demos_idx = []
 
-        # Load data
-        print("Loading dataset from:", data_path)
-        for i, demo in enumerate(tqdm(demos_raw_data)):
-            self.demos_idx.append(len(self.data))
-            keypoints = None
-            if self._action_representation == "joint_position_keyframe":
-                keypoints = self._discover_keypoints(demo)
-            num_steps = len(demo) - 1
-            for t in range(num_steps):
-                self.data.append(self._load_datapoint(demo, t, keypoints=keypoints))
+        # Load data from one or more environments using the same per-env split.
+        for env_id in self.env_ids:
+            data_path = os.path.join(
+                self.root_dir,
+                f"{task}",
+                f"env_{env_id}",
+                "episodes_observations.pkl.gz",
+            )
+            demos_raw_data = load_pickled_data(data_path)
+
+            split_index = int(train_split * len(demos_raw_data))
+            if train:
+                demos_raw_data = demos_raw_data[:split_index]
+            elif test:
+                demos_raw_data = demos_raw_data[split_index:]
+
+            print("Loading dataset from:", data_path)
+            for i, demo in enumerate(tqdm(demos_raw_data)):
+                self.demos_idx.append(len(self.data))
+                keypoints = None
+                if self._action_representation == "joint_position_keyframe":
+                    keypoints = self._discover_keypoints(demo)
+                num_steps = len(demo) - 1
+                for t in range(num_steps):
+                    self.data.append(self._load_datapoint(demo, t, keypoints=keypoints))
 
     def _discover_keypoints(self, trajectory):
         if self._action_keyframe_selection == "fixed_horizon":

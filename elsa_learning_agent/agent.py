@@ -72,6 +72,10 @@ class Agent():
         volumedp_action_token_dim=8,
         proprio_visual_fusion_mode="token",
         proprio_visual_fusion_hidden_dim=256,
+        proprio_visual_fusion_scale=1.0,
+        separate_gripper_head=False,
+        gripper_head_hidden_dim=128,
+        gripper_loss_weight=1.0,
     ):
         # YOUR CODE HERE
         # Define the architecture of your neural network here
@@ -107,6 +111,10 @@ class Agent():
         volumedp_action_token_dim=volumedp_action_token_dim,
         proprio_visual_fusion_mode=proprio_visual_fusion_mode,
         proprio_visual_fusion_hidden_dim=proprio_visual_fusion_hidden_dim,
+        proprio_visual_fusion_scale=proprio_visual_fusion_scale,
+        separate_gripper_head=separate_gripper_head,
+        gripper_head_hidden_dim=gripper_head_hidden_dim,
+        gripper_loss_weight=gripper_loss_weight,
         )
 
     def train(self, ):
@@ -1001,6 +1009,10 @@ class BCPolicy(nn.Module):
         volumedp_action_token_dim=8,
         proprio_visual_fusion_mode="token",
         proprio_visual_fusion_hidden_dim=256,
+        proprio_visual_fusion_scale=1.0,
+        separate_gripper_head=False,
+        gripper_head_hidden_dim=128,
+        gripper_loss_weight=1.0,
     ):
         super(BCPolicy, self).__init__()
         self.vision_backbone = vision_backbone
@@ -1031,10 +1043,15 @@ class BCPolicy(nn.Module):
         self.diffusion_timestep_dim = int(diffusion_timestep_dim)
         self.proprio_visual_fusion_mode = str(proprio_visual_fusion_mode or "token")
         self.proprio_visual_fusion_hidden_dim = int(proprio_visual_fusion_hidden_dim)
+        self.proprio_visual_fusion_scale = float(proprio_visual_fusion_scale)
+        self.separate_gripper_head = bool(separate_gripper_head)
+        self.gripper_head_hidden_dim = int(gripper_head_hidden_dim)
+        self.gripper_loss_weight = float(gripper_loss_weight)
         valid_proprio_visual_fusion_modes = {
             "none",
             "token",
             "global_film",
+            "gated_global_film",
             "token_film",
             "global_token_film",
         }
@@ -1049,9 +1066,31 @@ class BCPolicy(nn.Module):
                 "proprio_visual_fusion_hidden_dim must be positive, "
                 f"got {self.proprio_visual_fusion_hidden_dim}."
             )
+        if self.proprio_visual_fusion_scale < 0.0:
+            raise ValueError(
+                "proprio_visual_fusion_scale must be non-negative, "
+                f"got {self.proprio_visual_fusion_scale}."
+            )
+        if self.gripper_head_hidden_dim <= 0:
+            raise ValueError(
+                f"gripper_head_hidden_dim must be positive, got {self.gripper_head_hidden_dim}."
+            )
+        if self.gripper_loss_weight < 0.0:
+            raise ValueError(
+                f"gripper_loss_weight must be non-negative, got {self.gripper_loss_weight}."
+            )
         if self.policy_head_type == "diffusion" and self.diffusion_num_steps <= 1:
             raise ValueError(
                 "diffusion_num_steps must be greater than 1 when using diffusion head."
+            )
+        if self.separate_gripper_head and self.policy_head_type != "diffusion":
+            raise ValueError(
+                "separate_gripper_head currently requires policy_head_type='diffusion'."
+            )
+        if self.separate_gripper_head and action_dim % 8 != 0:
+            raise ValueError(
+                "separate_gripper_head expects action_dim to be a multiple of 8 "
+                f"(7 arm + 1 gripper per step), got action_dim={action_dim}."
             )
         if vision_backbone == "cnn":
             self.cnn_encoder = CNNEncoder(
@@ -1127,6 +1166,27 @@ class BCPolicy(nn.Module):
                 f"{action_output_activation}. Expected one of ['tanh', 'identity']."
             )
         self.state_feature_dim = 128
+        self.action_dim = int(action_dim)
+        if self.separate_gripper_head:
+            gripper_indices = list(range(7, self.action_dim, 8))
+            arm_indices = [idx for idx in range(self.action_dim) if idx not in gripper_indices]
+            self.arm_action_dim = len(arm_indices)
+            self.gripper_action_dim = len(gripper_indices)
+            self.register_buffer(
+                "arm_action_indices",
+                torch.tensor(arm_indices, dtype=torch.long),
+                persistent=False,
+            )
+            self.register_buffer(
+                "gripper_action_indices",
+                torch.tensor(gripper_indices, dtype=torch.long),
+                persistent=False,
+            )
+        else:
+            self.arm_action_dim = self.action_dim
+            self.gripper_action_dim = 0
+            self.arm_action_indices = None
+            self.gripper_action_indices = None
         self.mlp_encoder = MLPEncoder(
             input_dim=low_dim_state_dim,
             output_dim=self.state_feature_dim,
@@ -1139,6 +1199,7 @@ class BCPolicy(nn.Module):
         }:
             self.proprio_token_proj = nn.Linear(self.state_feature_dim, projector_dim)
         self.proprio_global_film = None
+        self.proprio_global_gate = None
         if self.proprio_visual_fusion_mode in {"global_film", "global_token_film"}:
             self.proprio_global_film = nn.Sequential(
                 nn.Linear(self.state_feature_dim, self.proprio_visual_fusion_hidden_dim),
@@ -1147,6 +1208,21 @@ class BCPolicy(nn.Module):
             )
             nn.init.zeros_(self.proprio_global_film[-1].weight)
             nn.init.zeros_(self.proprio_global_film[-1].bias)
+        elif self.proprio_visual_fusion_mode == "gated_global_film":
+            self.proprio_global_film = nn.Sequential(
+                nn.Linear(self.state_feature_dim, self.proprio_visual_fusion_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(self.proprio_visual_fusion_hidden_dim, 2 * projector_dim),
+            )
+            nn.init.zeros_(self.proprio_global_film[-1].weight)
+            nn.init.zeros_(self.proprio_global_film[-1].bias)
+            self.proprio_global_gate = nn.Sequential(
+                nn.Linear(projector_dim + self.state_feature_dim, self.proprio_visual_fusion_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(self.proprio_visual_fusion_hidden_dim, 1),
+            )
+            nn.init.zeros_(self.proprio_global_gate[-1].weight)
+            nn.init.constant_(self.proprio_global_gate[-1].bias, -2.0)
         self.proprio_token_film = None
         if self.proprio_visual_fusion_mode in {"token_film", "global_token_film"}:
             self.proprio_token_film = nn.Sequential(
@@ -1178,16 +1254,17 @@ class BCPolicy(nn.Module):
             self.policy_fc2 = nn.Linear(512, action_dim)
             self.diffusion_head = None
             self.multitoken_diffusion_head = None
+            self.gripper_head = None
         else:
             self.diffusion_head = DiffusionActionHead(
-                action_dim=action_dim,
+                action_dim=self.arm_action_dim,
                 context_dim=512,
                 hidden_dim=self.diffusion_hidden_dim,
                 timestep_dim=self.diffusion_timestep_dim,
             )
             if vision_backbone.startswith("volumedp_lite"):
                 self.multitoken_diffusion_head = MultiTokenDiffusionActionHead(
-                    action_dim=action_dim,
+                    action_dim=self.arm_action_dim,
                     context_dim=512,
                     token_context_dim=projector_dim,
                     hidden_dim=self.diffusion_hidden_dim,
@@ -1198,6 +1275,14 @@ class BCPolicy(nn.Module):
                 )
             else:
                 self.multitoken_diffusion_head = None
+            if self.separate_gripper_head:
+                self.gripper_head = nn.Sequential(
+                    nn.Linear(512, self.gripper_head_hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(self.gripper_head_hidden_dim, self.gripper_action_dim),
+                )
+            else:
+                self.gripper_head = None
             betas = torch.linspace(1e-4, 0.02, self.diffusion_num_steps, dtype=torch.float32)
             alphas = 1.0 - betas
             alpha_cumprod = torch.cumprod(alphas, dim=0)
@@ -1229,12 +1314,24 @@ class BCPolicy(nn.Module):
             state_embedding = F.layer_norm(state_embedding, state_embedding.shape[-1:])
             if spatial_tokens is not None:
                 spatial_tokens = F.layer_norm(spatial_tokens, spatial_tokens.shape[-1:])
-        if self.proprio_global_film is not None:
+        if self.proprio_visual_fusion_mode == "gated_global_film" and self.proprio_global_film is not None:
             gamma, beta = self.proprio_global_film(state_embedding).chunk(2, dim=-1)
-            img_embedding = img_embedding * (1.0 + gamma) + beta
+            gate_input = torch.cat([img_embedding, state_embedding], dim=-1)
+            gate = torch.sigmoid(self.proprio_global_gate(gate_input))
+            delta = img_embedding * gamma + beta
+            img_embedding = img_embedding + self.proprio_visual_fusion_scale * gate * delta
+        elif self.proprio_global_film is not None:
+            gamma, beta = self.proprio_global_film(state_embedding).chunk(2, dim=-1)
+            img_embedding = (
+                img_embedding * (1.0 + self.proprio_visual_fusion_scale * gamma)
+                + self.proprio_visual_fusion_scale * beta
+            )
         if spatial_tokens is not None and self.proprio_token_film is not None:
             gamma, beta = self.proprio_token_film(state_embedding).chunk(2, dim=-1)
-            spatial_tokens = spatial_tokens * (1.0 + gamma.unsqueeze(1)) + beta.unsqueeze(1)
+            spatial_tokens = (
+                spatial_tokens * (1.0 + self.proprio_visual_fusion_scale * gamma.unsqueeze(1))
+                + self.proprio_visual_fusion_scale * beta.unsqueeze(1)
+            )
         if spatial_tokens is not None and self.proprio_token_proj is not None:
             proprio_token = self.proprio_token_proj(state_embedding).unsqueeze(1)
             spatial_tokens = torch.cat([spatial_tokens, proprio_token], dim=1)
@@ -1284,6 +1381,33 @@ class BCPolicy(nn.Module):
             ) / torch.sqrt(alpha_t)
         return current.clamp(-1.0, 1.0)
 
+    def _split_action_targets(self, target_action):
+        if not self.separate_gripper_head:
+            return target_action, None
+        arm_target = torch.index_select(target_action, dim=-1, index=self.arm_action_indices)
+        gripper_target = torch.index_select(
+            target_action, dim=-1, index=self.gripper_action_indices
+        )
+        return arm_target, gripper_target
+
+    def _merge_arm_and_gripper_actions(self, arm_action, gripper_action):
+        if not self.separate_gripper_head:
+            return arm_action
+        full_action = torch.empty(
+            arm_action.shape[0],
+            self.action_dim,
+            device=arm_action.device,
+            dtype=arm_action.dtype,
+        )
+        full_action[:, self.arm_action_indices] = arm_action
+        full_action[:, self.gripper_action_indices] = gripper_action
+        return full_action
+
+    def _predict_gripper_logits(self, context):
+        if self.gripper_head is None:
+            return None
+        return self.gripper_head(context)
+
     def compute_loss(self, image, low_dim_state, target_action, criterion=None, obs_context=None):
         context, spatial_tokens = self._encode_context(image, low_dim_state, obs_context=obs_context)
         if self.policy_head_type == "mlp":
@@ -1292,24 +1416,34 @@ class BCPolicy(nn.Module):
                 return F.mse_loss(predicted, target_action)
             return criterion(predicted, target_action)
 
-        batch_size = target_action.shape[0]
+        arm_target_action, gripper_target_action = self._split_action_targets(target_action)
+        batch_size = arm_target_action.shape[0]
         timesteps = torch.randint(
             low=0,
             high=self.diffusion_num_steps,
             size=(batch_size,),
             device=target_action.device,
         )
-        noise = torch.randn_like(target_action)
+        noise = torch.randn_like(arm_target_action)
         sqrt_alpha_cumprod_t = self.diffusion_sqrt_alpha_cumprod[timesteps].unsqueeze(-1)
         sqrt_one_minus_t = self.diffusion_sqrt_one_minus_alpha_cumprod[timesteps].unsqueeze(-1)
-        noisy_action = sqrt_alpha_cumprod_t * target_action + sqrt_one_minus_t * noise
+        noisy_action = sqrt_alpha_cumprod_t * arm_target_action + sqrt_one_minus_t * noise
         predicted_noise = self._diffusion_predict_noise(
             noisy_action,
             context,
             timesteps,
             spatial_tokens=spatial_tokens,
         )
-        return F.mse_loss(predicted_noise, noise)
+        loss = F.mse_loss(predicted_noise, noise)
+        if self.separate_gripper_head and gripper_target_action is not None:
+            gripper_logits = self._predict_gripper_logits(context)
+            gripper_target_binary = ((gripper_target_action + 1.0) * 0.5).clamp(0.0, 1.0)
+            gripper_loss = F.binary_cross_entropy_with_logits(
+                gripper_logits,
+                gripper_target_binary,
+            )
+            loss = loss + self.gripper_loss_weight * gripper_loss
+        return loss
 
     def forward(self, image, low_dim_state, obs_context=None):
         context, spatial_tokens = self._encode_context(
@@ -1319,4 +1453,13 @@ class BCPolicy(nn.Module):
         )
         if self.policy_head_type == "mlp":
             return self._forward_mlp(context)
-        return self._sample_diffusion(context, spatial_tokens=spatial_tokens)
+        arm_action = self._sample_diffusion(context, spatial_tokens=spatial_tokens)
+        if not self.separate_gripper_head:
+            return arm_action
+        gripper_logits = self._predict_gripper_logits(context)
+        gripper_action = torch.where(
+            torch.sigmoid(gripper_logits) >= 0.5,
+            torch.ones_like(gripper_logits),
+            -torch.ones_like(gripper_logits),
+        )
+        return self._merge_arm_and_gripper_actions(arm_action, gripper_action)

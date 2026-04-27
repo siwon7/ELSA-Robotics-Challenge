@@ -6,6 +6,20 @@ __pycache__/
 # Flower directory
 .flwr
 
+# Large data/artifact directories
+datasets/
+model_checkpoints/
+results/
+logs/
+
+# Codex artifacts
+.codex
+.codex.*
+
+# Binary assets
+*.pdf
+*.png
+
 # C extensions
 *.so
 

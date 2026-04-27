@@ -129,4 +129,16 @@ def get_agent_model_kwargs(config) -> dict:
         "proprio_visual_fusion_hidden_dim": int(
             getattr(config.model, "proprio_visual_fusion_hidden_dim", 256) or 256
         ),
+        "proprio_visual_fusion_scale": float(
+            getattr(config.model, "proprio_visual_fusion_scale", 1.0)
+        ),
+        "separate_gripper_head": bool(
+            getattr(config.model, "separate_gripper_head", False)
+        ),
+        "gripper_head_hidden_dim": int(
+            getattr(config.model, "gripper_head_hidden_dim", 128) or 128
+        ),
+        "gripper_loss_weight": float(
+            getattr(config.model, "gripper_loss_weight", 1.0) or 1.0
+        ),
     }

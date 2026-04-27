@@ -77,6 +77,14 @@ def validate_runtime_config(config) -> dict:
     proprio_visual_fusion_hidden_dim = int(
         getattr(config.model, "proprio_visual_fusion_hidden_dim", 256) or 256
     )
+    proprio_visual_fusion_scale = float(
+        getattr(config.model, "proprio_visual_fusion_scale", 1.0)
+    )
+    separate_gripper_head = bool(getattr(config.model, "separate_gripper_head", False))
+    gripper_head_hidden_dim = int(
+        getattr(config.model, "gripper_head_hidden_dim", 128) or 128
+    )
+    gripper_loss_weight = float(getattr(config.model, "gripper_loss_weight", 1.0) or 1.0)
     spec = get_vision_backbone_spec(vision_backbone)
     if spec.dependency == "timm" and not _module_available("timm"):
         errors.append("vision_backbone requires `timm`, but it is not importable.")
@@ -100,15 +108,22 @@ def validate_runtime_config(config) -> dict:
         "none",
         "token",
         "global_film",
+        "gated_global_film",
         "token_film",
         "global_token_film",
     }:
         errors.append(
             "model.proprio_visual_fusion_mode must be one of "
-            "['none', 'token', 'global_film', 'token_film', 'global_token_film']."
+            "['none', 'token', 'global_film', 'gated_global_film', 'token_film', 'global_token_film']."
         )
     if proprio_visual_fusion_hidden_dim <= 0:
         errors.append("model.proprio_visual_fusion_hidden_dim must be positive.")
+    if proprio_visual_fusion_scale < 0.0:
+        errors.append("model.proprio_visual_fusion_scale must be non-negative.")
+    if gripper_head_hidden_dim <= 0:
+        errors.append("model.gripper_head_hidden_dim must be positive.")
+    if gripper_loss_weight < 0.0:
+        errors.append("model.gripper_loss_weight must be non-negative.")
     if diffusion_num_steps <= 1:
         errors.append("model.diffusion_num_steps must be greater than 1.")
     if diffusion_hidden_dim <= 0:
@@ -151,6 +166,8 @@ def validate_runtime_config(config) -> dict:
             errors.append(
                 "model.dino_lora_target_modules must be a comma-separated subset of ['qkv', 'proj']."
             )
+    if separate_gripper_head and policy_head_type != "diffusion":
+        errors.append("model.separate_gripper_head=true requires model.policy_head_type='diffusion'.")
 
     action_pipeline_preset = get_action_pipeline_preset(config)
     action_representation = get_action_representation(config)
@@ -214,6 +231,10 @@ def validate_runtime_config(config) -> dict:
         "volumedp_action_token_dim": volumedp_action_token_dim,
         "proprio_visual_fusion_mode": proprio_visual_fusion_mode,
         "proprio_visual_fusion_hidden_dim": proprio_visual_fusion_hidden_dim,
+        "proprio_visual_fusion_scale": proprio_visual_fusion_scale,
+        "separate_gripper_head": separate_gripper_head,
+        "gripper_head_hidden_dim": gripper_head_hidden_dim,
+        "gripper_loss_weight": gripper_loss_weight,
         "supported_vision_backbones": get_supported_vision_backbones(),
         "action_pipeline_preset": action_pipeline_preset,
         "action_representation": action_representation,

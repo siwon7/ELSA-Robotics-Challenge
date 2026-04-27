@@ -43,6 +43,8 @@ def main():
         default="/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/dataset_config.yaml",
     )
     parser.add_argument("--env-id", type=int, default=0)
+    parser.add_argument("--train-env-ids", nargs="*", type=int, default=None)
+    parser.add_argument("--eval-env-ids", nargs="*", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--train-split", type=float, default=0.9)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -63,13 +65,24 @@ def main():
 
     set_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    train_env_ids = (
+        [int(env_id) for env_id in args.train_env_ids]
+        if args.train_env_ids
+        else [int(args.env_id)]
+    )
+    eval_env_ids = (
+        [int(env_id) for env_id in args.eval_env_ids]
+        if args.eval_env_ids
+        else list(train_env_ids)
+    )
 
     if not OmegaConf.has_resolver("eval"):
         OmegaConf.register_new_resolver("eval", eval)
 
     cfg = OmegaConf.load(args.dataset_config_path)
     cfg.dataset.task = args.task
-    cfg.dataset.env_id = int(args.env_id)
+    cfg.dataset.env_id = int(train_env_ids[0])
+    cfg.dataset.env_ids = list(train_env_ids)
     cfg.dataset.train_split = float(args.train_split)
     cfg.dataset.test_split = float(args.train_split)
     cfg.dataset.batch_size = int(args.batch_size)
@@ -118,11 +131,16 @@ def main():
             flush=True,
         )
 
-    result_dir = Path(args.output_root) / args.task / args.run_name / f"env_{args.env_id:03d}"
+    env_group_label = (
+        f"env_{train_env_ids[0]:03d}"
+        if len(train_env_ids) == 1
+        else "train_envs_" + "_".join(f"{env_id:03d}" for env_id in train_env_ids)
+    )
+    result_dir = Path(args.output_root) / args.task / args.run_name / env_group_label
     ckpt_dir = Path(args.checkpoint_root) / args.task / args.run_name
     result_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = ckpt_dir / f"env_{args.env_id:03d}.pth"
+    ckpt_path = ckpt_dir / f"{env_group_label}.pth"
     resolved_config_path = result_dir / "resolved_config.yaml"
     OmegaConf.save(cfg, resolved_config_path)
 
@@ -135,21 +153,30 @@ def main():
     base_cfg.dataset = cfg.dataset
     base_cfg.transform = cfg.transform
 
-    rewards = online_evaluation(
-        agent,
-        device,
-        get_image_transform(cfg),
-        base_cfg,
-        args.env_id,
-        num_episodes=args.eval_episodes,
-    )
-    sr = float(np.mean(rewards)) if rewards else None
-    std_sr = float(np.std(rewards)) if rewards else None
+    per_env_rewards = {}
+    per_env_sr = {}
+    flat_rewards = []
+    for eval_env_id in eval_env_ids:
+        rewards = online_evaluation(
+            agent,
+            device,
+            get_image_transform(cfg),
+            base_cfg,
+            eval_env_id,
+            num_episodes=args.eval_episodes,
+        )
+        rewards = [float(x) for x in rewards]
+        per_env_rewards[str(eval_env_id)] = rewards
+        per_env_sr[str(eval_env_id)] = float(np.mean(rewards)) if rewards else None
+        flat_rewards.extend(rewards)
+    sr = float(np.mean(flat_rewards)) if flat_rewards else None
+    std_sr = float(np.std(flat_rewards)) if flat_rewards else None
+    per_env_sr_values = [value for value in per_env_sr.values() if value is not None]
 
     result = {
         "task": args.task,
-        "train_env_ids": [args.env_id],
-        "eval_env_ids": [args.env_id],
+        "train_env_ids": train_env_ids,
+        "eval_env_ids": eval_env_ids,
         "epochs": args.epochs,
         "train_split": args.train_split,
         "batch_size": args.batch_size,
@@ -185,11 +212,18 @@ def main():
             "rmse": float(math.sqrt(offline_loss)),
         },
         "online_seen_env": {
-            "rewards": [float(x) for x in rewards],
+            "rewards": flat_rewards,
             "mean_reward": sr,
             "std_reward": std_sr,
         },
-        "per_env_sr": {str(args.env_id): sr},
+        "per_env_rewards": per_env_rewards,
+        "per_env_sr": per_env_sr,
+        "mean_per_env_sr": (
+            float(np.mean(per_env_sr_values)) if per_env_sr_values else None
+        ),
+        "std_per_env_sr": (
+            float(np.std(per_env_sr_values)) if per_env_sr_values else None
+        ),
         "sr": sr,
         "std_sr": std_sr,
     }
