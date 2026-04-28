@@ -15,7 +15,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 1,
-      "passes": false
+      "passes": true,
+      "notes": "Added JP direct diffusion configs for insert_onto_square_peg and scoop_with_spatula with identity activation, JP joint bounds, and task-specific dataset.task values."
     },
     {
       "id": "US-002",
