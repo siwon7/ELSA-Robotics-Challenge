@@ -58,7 +58,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 4,
-      "passes": false
+      "passes": true,
+      "notes": "Added scripts/start_jp_diffusion_4task_tmux.sh to launch slide, close_box, insert_onto_square_peg, and scoop_with_spatula in one tmux session across GPUs 0-3 using the specified JV/JP diffusion configs and task_RUN_SUFFIX run names."
     },
     {
       "id": "US-005",

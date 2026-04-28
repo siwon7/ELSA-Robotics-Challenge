@@ -15,7 +15,7 @@
 
 \usepackage[accepted]{icml2024}
 
-\icmltitlerunning{Foundation-Visual Diffusion Policies for Federated Manipulation}
+\icmltitlerunning{Diffusion Policies for Federated Manipulation}
 
 \begin{document}
 
@@ -36,25 +36,19 @@ for Federated Robotic Manipulation}
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-The recently released FLAME benchmark is the first standardised testbed
-for federated learning (FL) on robotic manipulation, but its CNN+MLP
-behaviour-cloning baseline trained with FedAvg/FedOpt
-collapses on three of the four tasks
-(0\% success on \emph{Insert Peg} and \emph{Scoop}, 24--28\% on
-\emph{Slide Block}). We argue this is not an FL aggregation problem
-but a \emph{representation} and \emph{action-distribution} problem:
-the visual encoder overfits to per-environment textures and the
-deterministic MLP cannot model the multi-modal demonstrations.
-We propose a single-knob redesign: replace the encoder with a
-\textbf{frozen DINOv3 + Depth-Anything backbone with LoRA adapters},
-the head with a \textbf{conditional diffusion policy with separate
-gripper classifier}, and the FL aggregation surface with
-\textbf{LoRA-only updates}. Same-env probes already lift
-\emph{Slide Block} from 0.24 to 0.75 success rate, and a 10-round
-federated pilot validates that the diffusion head trains stably under
-FedAvg. We outline a four-phase plan to deliver a complete
-4-task $\times$ multi-method comparison and ablation suite by the end
-of the project.
+The FLAME benchmark is the first standardised
+federated-learning (FL) testbed for robotic manipulation, but its
+CNN+MLP behaviour-cloning baseline collapses on three of four tasks
+(0\% success on \emph{Insert} and \emph{Scoop}, 24--28\% on
+\emph{Slide}). We argue this is a \emph{representation} and
+\emph{action-distribution} failure, not an aggregation one:
+the encoder overfits to per-environment textures and the
+deterministic MLP averages over multi-modal demos. We propose
+a frozen \textbf{DINOv3 + Depth-Anything backbone with LoRA},
+a \textbf{conditional diffusion head with split gripper}, and
+\textbf{LoRA-only FL aggregation}. Same-env probes lift
+\emph{Slide Block} from 0.24 to 0.75 SR; a 10-round federated pilot
+confirms the diffusion head trains stably under FedAvg.
 \end{abstract}
 
 \section{Motivation and Gap}
@@ -112,11 +106,11 @@ that all comparisons are apples-to-apples. We replace three components
 of the local agent.
 
 \subsection{Vision: Frozen DINOv3 + Depth-Anything + LoRA}
-The RGB stream is encoded by a frozen DINOv3 ViT-S/16. We insert
-LoRA adapters of rank $r\!\in\!\{4,8\}$ in the last
+The RGB stream is encoded by a frozen DINOv3 ViT-S/16~\cite{dinov2}. We insert
+LoRA~\cite{lora} adapters of rank $r\!\in\!\{4,8\}$ in the last
 $N\!=\!8$ attention blocks; the rest of the backbone is shared, byte-identical,
 across clients and is therefore \emph{not} subject to FL drift.
-A frozen monocular Depth-Anything Small branch provides a 3-D geometry
+A frozen monocular Depth-Anything~\cite{depthanything} Small branch provides a 3-D geometry
 prior that is concatenated to DINO tokens before pooling, recovering
 viewpoint cues that 2-D features alone miss. The 8-DoF
 proprioceptive state is fused via gated global FiLM, letting the robot
@@ -124,7 +118,7 @@ pose condition the visual interpretation.
 
 \subsection{Action: Conditional Diffusion Head}
 The deterministic 4-unit MLP of the FLAME baseline is replaced by a
-20-step DDPM denoising MLP conditioned on the joint
+20-step DDPM denoising MLP~\cite{diffpolicy} conditioned on the joint
 (visual, state) embedding. We adopt action chunking with
 $\text{chunk}=4,\ \text{exec}=2$ (receding-horizon execution), and
 predict the gripper command with a separate sigmoid+BCE head, since the
@@ -140,8 +134,8 @@ Only the LoRA matrices, the visual projector, the proprio MLP, and the
 diffusion head are sent to the server, totalling
 $\sim$10\% of the model parameters. The frozen DINOv3 + Depth-Anything
 backbone is never communicated nor updated, eliminating the dominant
-source of client drift. We will benchmark FedAvg, FedProx,
-and SCAFFOLD on this reduced surface; an early pilot (Tab.~\ref{tab:fl})
+source of client drift. We will benchmark FedAvg~\cite{fedavg}, FedProx,
+and SCAFFOLD~\cite{scaffold} on this reduced surface; an early pilot (Tab.~\ref{tab:fl})
 already confirms that the diffusion head trains stably in FL and that
 FedProx's proximal term \emph{hurts} when only adapters are aggregated.
 
@@ -197,45 +191,36 @@ from highly non-IID image classification.
 \section{Plan and Deliverables}
 \label{sec:plan}
 
-\textbf{Phase 1 (Same-env, weeks 1--2).} Complete the 4-task same-env
-sweep with the best DINO+Depth+Diffusion config, including
-JP-direct configs for \emph{Insert} and \emph{Scoop}
-and a 100-epoch separate-gripper config for \emph{Close Box}.
-Scale environments from
-$|E|\!\in\!\{5,10\}$ to characterise the same-task generalisation curve
-before going federated.
+\textbf{P1 Same-env (wk 1--2).} 4-task sweep with the best
+DINO+Depth+Diffusion config, JP-direct for \emph{Insert/Scoop}, and
+a 100-epoch split-gripper config for \emph{Close Box}.
+Scale $|E|\!\in\!\{5,10\}$ to map the generalisation curve.
 
-\textbf{Phase 2 (Federated baseline, weeks 3--4).} Run the best
-same-env config under FLAME's official FL protocol (30 rounds, 50 local
-epochs, 20 of 400 clients per round) and reproduce
-Tab.~\ref{tab:flame} for direct comparison. Ablate
-local-epoch count $\in\{1,5,10,25\}$ and LoRA rank $\in\{2,4,8\}$.
+\textbf{P2 Federated baseline (wk 3--4).} Best same-env config under
+FLAME's official protocol (30 rounds, 50 local epochs, 20/400 clients)
+to reproduce Tab.~\ref{tab:flame}. Ablate local-epochs
+$\in\{1,5,10,25\}$ and LoRA rank $\in\{2,4,8\}$.
 
-\textbf{Phase 3 (FL strategies, weeks 5--6).} Implement and
-benchmark SCAFFOLD and FedBN on top of the LoRA-only surface,
-isolating which aggregation rule benefits most from a frozen backbone.
+\textbf{P3 FL strategies (wk 5--6).} Add SCAFFOLD and FedBN on the
+LoRA-only surface; isolate which aggregator benefits most from a
+frozen backbone.
 
-\textbf{Phase 4 (Final tables, week 7).} Produce the camera-ready
-4-task $\times$ 5-method comparison, an ablation table over
-\{vision encoder, head, LoRA, fusion\}, and a client-count scaling
-study (5 / 20 / 50 / 100 / 400). Optionally extend to
-VolumeDP-lite, a 3-D-aware spatial-token decoder, as a stretch goal.
+\textbf{P4 Final tables (wk 7).} 4-task$\times$5-method comparison,
+ablation over \{vision, head, LoRA, fusion\}, and client-count scaling
+(5/20/50/100/400). Stretch: VolumeDP-lite 3-D spatial-token decoder.
 
 \section{Expected Contributions}
 \label{sec:contrib}
-\textbf{C1.} A foundation-model-based, FL-friendly visual front-end
-that removes per-client backbone drift and reduces communication by
-roughly an order of magnitude.\;
-\textbf{C2.} The first demonstration that a diffusion policy head
-trains stably and outperforms deterministic baselines under
-federated aggregation, with separate continuous-arm and discrete-gripper
-heads.\;
-\textbf{C3.} An empirical study, on the FLAME benchmark, of how
-LoRA-only aggregation interacts with FedAvg, FedProx, and
-client-drift-correcting algorithms such as SCAFFOLD, with a
-publicly released reproducible recipe.
+\textbf{C1.} A foundation-model visual front-end that removes
+per-client backbone drift and cuts FL communication by $\sim$10$\times$.\;
+\textbf{C2.} First evidence that a diffusion policy head trains
+stably and beats deterministic baselines under FL, with a separate
+arm/gripper head.\;
+\textbf{C3.} An empirical study on FLAME of how LoRA-only aggregation
+interacts with FedAvg, FedProx, and SCAFFOLD, released as a
+reproducible recipe.
 
-{\small
+{\footnotesize
 \bibliographystyle{icml2024}
 \bibliography{proposal}
 }
