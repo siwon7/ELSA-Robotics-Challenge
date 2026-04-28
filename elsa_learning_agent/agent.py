@@ -1379,7 +1379,7 @@ class BCPolicy(nn.Module):
             current = (
                 current - (beta_t / torch.sqrt(1.0 - alpha_cumprod_t)) * predicted_noise
             ) / torch.sqrt(alpha_t)
-        return current.clamp(-1.0, 1.0)
+        return self.output_activation(current)
 
     def _split_action_targets(self, target_action):
         if not self.separate_gripper_head:

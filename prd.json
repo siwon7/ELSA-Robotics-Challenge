@@ -71,7 +71,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 5,
-      "passes": false
+      "passes": true,
+      "notes": "Replaced the hard clamp at the end of _sample_diffusion with self.output_activation(current) so JV policies still use tanh bounding while JP policies avoid lossy denoising truncation."
     }
   ]
 }
