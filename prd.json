@@ -44,7 +44,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 3,
-      "passes": false
+      "passes": true,
+      "notes": "Added experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml by copying the split-gripper JV direct diffusion template and setting dataset.task to close_box."
     },
     {
       "id": "US-004",
