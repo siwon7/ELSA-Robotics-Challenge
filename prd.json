@@ -30,7 +30,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 2,
-      "passes": false
+      "passes": true,
+      "notes": "Added JP servo diffusion configs for insert_onto_square_peg and scoop_with_spatula with task-specific dataset.task values, DINO+Depth LoRA8 diffusion settings, JP joint bounds, and servo parameters gain=20.0 clip=1.0 steps=2 tolerance=0.01."
     },
     {
       "id": "US-003",
