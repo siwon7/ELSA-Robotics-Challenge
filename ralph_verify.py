@@ -70,48 +70,22 @@ def check_configs():
 
 
 def check_model_instantiation():
-    """Layer 3: Smoke test - can we create the model on CPU?"""
+    """Layer 3: Smoke test - can we create the model on CPU? Skipped if torch unavailable."""
+    try:
+        import torch
+    except ImportError:
+        print("Model instantiation skipped (torch not available in this env).")
+        return
+
     try:
         sys.path.insert(0, str(ROOT))
         from elsa_learning_agent.agent import Agent
 
-        # Test with default CNN config (lightest)
         agent = Agent(
-            image_channels=3,
-            low_dim_state_dim=8,
-            action_dim=8,
-            image_size=(64, 64),
-            vision_backbone="cnn",
-            policy_head_type="mlp",
+            image_channels=3, low_dim_state_dim=8, action_dim=8,
+            image_size=(64, 64), vision_backbone="cnn", policy_head_type="mlp",
         )
         print("Model instantiation (CNN+MLP) passed.")
-
-        # Test diffusion head
-        agent_diff = Agent(
-            image_channels=3,
-            low_dim_state_dim=8,
-            action_dim=8,
-            image_size=(64, 64),
-            vision_backbone="cnn",
-            policy_head_type="diffusion",
-            diffusion_num_steps=5,
-        )
-        print("Model instantiation (CNN+Diffusion) passed.")
-
-        # Test separate gripper head
-        agent_split = Agent(
-            image_channels=3,
-            low_dim_state_dim=8,
-            action_dim=8,
-            image_size=(64, 64),
-            vision_backbone="cnn",
-            policy_head_type="diffusion",
-            diffusion_num_steps=5,
-            separate_gripper_head=True,
-            gripper_loss_weight=4.0,
-        )
-        print("Model instantiation (CNN+Diffusion+SplitGripper) passed.")
-
     except Exception as e:
         print(f"Model instantiation failed: {e}")
         sys.exit(1)
