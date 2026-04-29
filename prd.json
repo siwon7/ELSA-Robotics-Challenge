@@ -77,7 +77,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 4,
-      "passes": false
+      "passes": true,
+      "notes": "Added scripts/aggregate_sameenv_sweep_results.py with argparse-based --result-root/--tasks/--out/--dry-run support, CSV output to results/sameenv_sweep_summary.csv by default, TSV dry-run output, config-field extraction from resolved_config.yaml with defaults for chunk/execute steps and optional servo fields, and verified it with --help, a synthetic result tree, a dry-run against the real same_env_suite artifact tree, and python ralph_verify.py."
     },
     {
       "id": "US-010",
