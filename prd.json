@@ -36,7 +36,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 2,
-      "passes": false
+      "passes": true,
+      "notes": "Added the three slide same-env JV-direct diffusion vision-ablation configs for cnn, frozen DINOv3, and frozen DINO+Depth backbones. Verified YAML parsing and ran python ralph_verify.py successfully on 2026-04-30."
     },
     {
       "id": "US-013",
