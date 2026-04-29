@@ -34,3 +34,9 @@
 - action_min: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, 0.0]
 - action_max: [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 1.0]
 - Last dim is gripper: 0.0 (closed) to 1.0 (open)
+
+## Phase 1 - close+slide action+servo sweep (planned 2026-04-30)
+- Planned same-env SR target for `close_box` and `slide_block_to_target`: 0.70-0.80 before Phase 2 vision/proprio ablations.
+- Configs covered: `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_splitgripper.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_splitgripper.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_chunk4exec2_splitgripper.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_chunk4exec2_splitgripper.yaml`, `experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml`, `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml`, and `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo.yaml`.
+- GPU plan: 1 GPU = 1 long run, 4 in parallel via `scripts/start_long_pair_sweep_tmux.sh`.
+- Insert and scoop remain at SR 0.0/0.2 even with JP configs and require diagnostic work in a later batch.

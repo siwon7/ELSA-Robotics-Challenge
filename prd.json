@@ -96,7 +96,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 5,
-      "passes": false
+      "passes": true,
+      "notes": "Added docs/experiment_matrix.md as the Phase 1 sweep source of truth with replay-ceiling and close+slide action-sweep tables, appended the planned 2026-04-30 close+slide sweep section to learnings.md without modifying prior content, and verified with python ralph_verify.py."
     }
   ]
 }
