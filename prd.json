@@ -59,7 +59,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 3,
-      "passes": false
+      "passes": true,
+      "notes": "Added scripts/start_long_pair_sweep_tmux.sh as an executable tmux launcher for ordered GPU/task:config pairs with default EPOCHS=100, EVAL_EPISODES=20, SEED=0, and ENV_ID=0, pre-launch config existence checks, per-GPU long_pair_sweep logs, and run names of the form <task>_<run_suffix>_e<EPOCHS>_s<SEED>; validated usage/count/missing-config failures, simulated tmux command construction with a stubbed tmux binary, and ran python ralph_verify.py successfully."
     },
     {
       "id": "US-009",
