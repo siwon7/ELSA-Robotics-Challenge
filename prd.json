@@ -18,7 +18,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 1,
-      "passes": false
+      "passes": true,
+      "notes": "Created the four close_box JP direct/servo splitgripper diffusion configs using the existing JP templates, added separate_gripper_head/gripper_head_hidden_dim/gripper_loss_weight, preserved the specified dataset and transform settings, and verified with targeted YAML checks plus python ralph_verify.py."
     },
     {
       "id": "US-007",
