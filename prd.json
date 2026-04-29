@@ -54,7 +54,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 3,
-      "passes": false
+      "passes": true,
+      "notes": "Added scripts/wave_summary.py to scan same-env results by wave tag and emit per-task markdown tables. Verified python scripts/wave_summary.py --help, exercised the script with --waves phase1A against an empty local results root to confirm markdown output creation, and ran python ralph_verify.py successfully on 2026-04-30."
     },
     {
       "id": "US-014",
