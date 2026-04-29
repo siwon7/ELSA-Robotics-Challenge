@@ -1,0 +1,98 @@
+{
+  "project": "ELSA-FLAME-Improvement-Phase1-WaveBC-Prep",
+  "branchName": "main",
+  "userStories": [
+    {
+      "id": "US-011",
+      "title": "Wave B servo gain/clip and slide chunk4exec2 same-env configs (6 files)",
+      "description": "Create six new same-env experiment YAML configs that extend Phase 1 Wave A coverage. All configs reuse the DINO+Depth LoRA8 diffusion stack used in US-006/US-007 (vision_backbone: dinov3_depth_anything_small_frozen, policy_head_type: diffusion, diffusion_num_steps: 20, diffusion_hidden_dim: 512, diffusion_timestep_dim: 128, projector_dim: 192, normalize_branch_embeddings: true, low_dim_dropout_prob: 0.2, use_dino_lora: true, dino_lora_rank: 8, dino_lora_alpha: 16.0, dino_lora_num_blocks: 8, dino_lora_target_modules: qkv, learning_rate: 0.0003, weight_decay: 1.0e-05, optimizer: adam, action_output_activation: identity). dataset.task is set per file. transform.action_min and transform.action_max use JP joint bounds [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, 0.0] / [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 1.0]. dataset.test_split: 0.9, batch_size: 32, num_workers: 4, num_workers_server: 32, enable_live_eval: false, num_episodes_live: 5, test_env_idx_range: [400, 401], test_live_idxs: [400], final_eval_env_idx_range: [400, 410], final_eval_live_idxs: [400, 401, 402, 403, 404, 405, 406, 407, 408, 409], final_test_env_idx_range: [410, 420], final_test_live_idxs: [410, 411, 412, 413, 414, 415, 416, 417, 418, 419], root_dir/root_eval_dir/root_test_dir as in existing close_box configs, federated.method_preset: fedavg, federated.prox_mu: 0.0, transform.normalize_mean: [0.5, 0.5, 0.5], transform.normalize_std: [0.5, 0.5, 0.5]. Create exactly these six new files: (1) experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10_splitgripper.yaml -- task: close_box, action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo, action_representation: auto, joint_velocity_servo_gain: 30.0, joint_velocity_servo_clip: 1.0, joint_velocity_servo_steps: 2, joint_velocity_servo_tolerance: 0.01, separate_gripper_head: true, gripper_head_hidden_dim: 128, gripper_loss_weight: 4.0. (2) experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05_splitgripper.yaml -- like (1) but joint_velocity_servo_gain: 20.0, joint_velocity_servo_clip: 0.5. (3) experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10.yaml -- task: slide_block_to_target, action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo, action_representation: auto, joint_velocity_servo_gain: 30.0, joint_velocity_servo_clip: 1.0, joint_velocity_servo_steps: 2, joint_velocity_servo_tolerance: 0.01, NO separate_gripper_head. (4) experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05.yaml -- like (3) but joint_velocity_servo_gain: 20.0, joint_velocity_servo_clip: 0.5. (5) experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect_chunk4exec2.yaml -- task: slide_block_to_target, action_pipeline_preset: joint_position_direct, action_representation: auto, dataset.action_chunk_len: 4, dataset.receding_horizon_execute_steps: 2, NO separate_gripper_head. (6) experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_chunk4exec2.yaml -- task: slide_block_to_target, action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo, action_representation: auto, joint_velocity_servo_gain: 20.0, joint_velocity_servo_clip: 1.0, joint_velocity_servo_steps: 2, joint_velocity_servo_tolerance: 0.01, dataset.action_chunk_len: 4, dataset.receding_horizon_execute_steps: 2, NO separate_gripper_head.",
+      "acceptanceCriteria": [
+        "experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10_splitgripper.yaml exists, parses as YAML, has joint_velocity_servo_gain: 30.0 and joint_velocity_servo_clip: 1.0 and separate_gripper_head: true",
+        "experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05_splitgripper.yaml exists, parses as YAML, has joint_velocity_servo_gain: 20.0 and joint_velocity_servo_clip: 0.5 and separate_gripper_head: true",
+        "experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10.yaml exists, parses as YAML, has joint_velocity_servo_gain: 30.0 and dataset.task: slide_block_to_target",
+        "experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05.yaml exists, parses as YAML, has joint_velocity_servo_gain: 20.0 and joint_velocity_servo_clip: 0.5",
+        "experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect_chunk4exec2.yaml exists, parses as YAML, has dataset.action_chunk_len: 4 and dataset.receding_horizon_execute_steps: 2 and dataset.action_pipeline_preset: joint_position_direct",
+        "experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_chunk4exec2.yaml exists, parses as YAML, has dataset.action_chunk_len: 4 and dataset.action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo",
+        "All six configs set transform.action_min and transform.action_max to JP joint bounds",
+        "All six configs set vision_backbone: dinov3_depth_anything_small_frozen and policy_head_type: diffusion and use_dino_lora: true and dino_lora_rank: 8",
+        "Slide configs do NOT set separate_gripper_head: true",
+        "ralph_verify.py passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Added the six Wave B same-env configs for close_box servo gain/clip variants and slide servo/direct chunk4exec2 variants. Verified YAML parsing and ran python ralph_verify.py successfully on 2026-04-30."
+    },
+    {
+      "id": "US-012",
+      "title": "Slide vision ablation configs for Phase 2 prep (3 files)",
+      "description": "Create three new slide_block_to_target same-env configs that fix the action interface to JV direct (matching the current best baseline) and vary only the vision backbone, so Phase 2 vision ablation can compare against the existing DINO+Depth LoRA8 baseline. All configs use policy_head_type: diffusion, diffusion_num_steps: 20, diffusion_hidden_dim: 512, diffusion_timestep_dim: 128, projector_dim: 192, action_output_activation: tanh, normalize_branch_embeddings: true, low_dim_dropout_prob: 0.2, learning_rate: 0.0003, weight_decay: 1.0e-05, optimizer: adam, dataset.task: slide_block_to_target, action_pipeline_preset: joint_velocity_direct, action_representation: joint_velocity. transform.action_min: [-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0], transform.action_max: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]. dataset and federated and transform sections otherwise mirror experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml plus dataset.task: slide_block_to_target. Create exactly these three new files: (1) experiments/slide_block_to_target_sameenv_cnn_diffusion_jvdirect.yaml -- vision_backbone: cnn, no use_dino_lora, no LoRA fields; this is the FLAME-architecture-style CNN with our diffusion head. (2) experiments/slide_block_to_target_sameenv_dinov3_frozen_diffusion_jvdirect.yaml -- vision_backbone: dinov3_vits16_frozen, use_dino_lora: false; pure frozen DINOv3 without LoRA, no depth. (3) experiments/slide_block_to_target_sameenv_dino_depth_frozen_diffusion_jvdirect.yaml -- vision_backbone: dinov3_depth_anything_small_frozen, use_dino_lora: false; frozen dual stream without LoRA.",
+      "acceptanceCriteria": [
+        "experiments/slide_block_to_target_sameenv_cnn_diffusion_jvdirect.yaml exists, parses as YAML, sets vision_backbone: cnn",
+        "experiments/slide_block_to_target_sameenv_dinov3_frozen_diffusion_jvdirect.yaml exists, parses as YAML, sets vision_backbone: dinov3_vits16_frozen and use_dino_lora: false",
+        "experiments/slide_block_to_target_sameenv_dino_depth_frozen_diffusion_jvdirect.yaml exists, parses as YAML, sets vision_backbone: dinov3_depth_anything_small_frozen and use_dino_lora: false",
+        "All three configs set dataset.task: slide_block_to_target and dataset.action_pipeline_preset: joint_velocity_direct",
+        "All three configs set policy_head_type: diffusion and diffusion_num_steps: 20",
+        "All three configs use transform.action_min and transform.action_max for JV direct (-1..1 except gripper 0..1)",
+        "ralph_verify.py passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Added the three slide same-env JV-direct diffusion vision-ablation configs for cnn, frozen DINOv3, and frozen DINO+Depth backbones. Verified YAML parsing and ran python ralph_verify.py successfully on 2026-04-30."
+    },
+    {
+      "id": "US-013",
+      "title": "Wave result markdown snapshot script",
+      "description": "Create scripts/wave_summary.py, a Python script that scans the same-env results tree, filters runs whose run_name contains a user-supplied wave tag (e.g., 'phase1A'), and emits a markdown summary table. Usage: python scripts/wave_summary.py --waves WAVE_TAG [WAVE_TAG ...] [--result-root ROOT] [--out OUT_PATH]. Default --result-root is ${ELSA_ARTIFACT_ROOT:-/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts}/results/same_env_suite. Default --out is results/wave_summary.md. The script must (1) iterate over each task subdir under result-root, (2) for each run-name subdir, glob env_*/result.json, (3) skip runs whose run_name does not contain ANY of the provided wave tags (substring match), (4) for each matching result.json read sr or success_rate or mean_per_env_sr (try keys in this order, fall back to None), (5) read offline_seen_env.rmse if present otherwise None, (6) attempt to read sibling resolved_config.yaml at run_dir/resolved_config.yaml to extract action_pipeline_preset, joint_velocity_servo_gain, joint_velocity_servo_clip, separate_gripper_head, action_chunk_len (default 1 if missing), receding_horizon_execute_steps (default 1 if missing); (7) write a markdown file with H1 'Wave summary: <comma-joined waves>' followed by an H2 per task, each H2 containing a markdown table with columns Run, Action, Servo (gain/clip), Splitgripper, Chunk, SR, RMSE. Sort rows by SR descending within each task. Use argparse. Use only standard library + PyYAML.",
+      "acceptanceCriteria": [
+        "scripts/wave_summary.py exists",
+        "Running 'python scripts/wave_summary.py --help' exits 0 and prints argument descriptions for --waves, --result-root, --out",
+        "Script imports yaml, json, argparse, pathlib",
+        "Script uses argparse.ArgumentParser",
+        "Default --result-root resolves to ${ELSA_ARTIFACT_ROOT}/results/same_env_suite or hardcoded fallback",
+        "Default --out is results/wave_summary.md",
+        "Script can be invoked with --waves phase1A and produces a markdown file (or empty markdown if no runs match)",
+        "ralph_verify.py passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Added scripts/wave_summary.py to scan same-env results by wave tag and emit per-task markdown tables. Verified python scripts/wave_summary.py --help, exercised the script with --waves phase1A against an empty local results root to confirm markdown output creation, and ran python ralph_verify.py successfully on 2026-04-30."
+    },
+    {
+      "id": "US-014",
+      "title": "Wave B convenience tmux launcher",
+      "description": "Create scripts/start_wave_B_tmux.sh, an executable bash script that launches the four primary Wave B runs on 4 GPUs using the existing scripts/start_long_pair_sweep_tmux.sh. The four primary pairs in order are: (1) close_box:experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10_splitgripper.yaml on GPU 0, (2) close_box:experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05_splitgripper.yaml on GPU 1, (3) slide_block_to_target:experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10.yaml on GPU 2, (4) slide_block_to_target:experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05.yaml on GPU 3. The script should set EPOCHS=50 and EVAL_EPISODES=20 and SEED=0 and ENV_ID=0 by default (env vars override permitted), session name 'phase1_waveB', run_suffix 'phase1B'. Use set -euo pipefail. Print a 'Wave B launched' summary at the end. The two leftover Wave B configs (slide chunk4exec2 jpdirect and jpservo from US-011) are explicitly NOT included in this script -- add a final echo line noting they are reserved for a follow-up wave. Verify each config file exists; abort with a clear error if missing (the inner script also checks but a fail-fast at the top is friendlier). chmod +x the script.",
+      "acceptanceCriteria": [
+        "scripts/start_wave_B_tmux.sh exists and is executable",
+        "Script uses #!/usr/bin/env bash and set -euo pipefail",
+        "Script invokes scripts/start_long_pair_sweep_tmux.sh",
+        "Script references all 4 primary Wave B config paths from US-011",
+        "Script sets default EPOCHS to 50 and EVAL_EPISODES to 20 (env vars override)",
+        "Script uses session name 'phase1_waveB' and run_suffix 'phase1B'",
+        "Script verifies each config file exists and aborts with error if any are missing",
+        "Script ends with an echo noting the two slide chunk4exec2 configs are reserved for a follow-up wave",
+        "ralph_verify.py passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Added scripts/start_wave_B_tmux.sh as an executable wrapper around scripts/start_long_pair_sweep_tmux.sh for the four primary Wave B runs on GPUs 0-3 with defaults EPOCHS=50, EVAL_EPISODES=20, SEED=0, and ENV_ID=0. Verified bash syntax with bash -n, confirmed the script is executable, and ran python ralph_verify.py successfully on 2026-04-30."
+    },
+    {
+      "id": "US-015",
+      "title": "Experiment matrix and learnings update for Wave B/C and Phase 2 prep",
+      "description": "Update docs/experiment_matrix.md and append a new section to learnings.md to reflect Wave B / Wave C / Phase 2 plans without modifying any prior content. (A) docs/experiment_matrix.md edits: 1) Update the existing 'Phase 1 - Action sweep on close_box and slide' table by appending rows for the six US-011 configs (mark Status as 'pending' and Best SR as ''), and append a final row for 'phase1A' Wave A status with Best SR left empty (Wave A is in flight). 2) Add a new H2 section 'Wave B - Servo gain/clip sweep' summarizing the four primary Wave B runs from US-014 in a markdown table with columns Task, Config path, Servo (gain/clip), GPU, Status. Status defaults to pending. 3) Add a new H2 section 'Wave C - Slide vision ablation (Phase 2 candidate)' with a markdown table for the three US-012 configs with columns Vision backbone, Config path, Status. 4) Add a new H2 section 'Phase 2 - VolumeDP-FL with per-client extrinsics' with a paragraph stating: per-client camera extrinsics are realistic in federated robotics (each client knows its own calibration), camera pose is already a perturbation factor in FLAME (Table I, Δx/Δy/Δz: (-0.05, 0.05)), and the existing volumedp_lite encoder will be extended into VolumeDPFullDinoDepthEncoder by Claude (not by ralph) to add Depth-Anything voxel lift, goal-aware softmax token weights replacing top-k, and an EE-mask BCE auxiliary supervision hook. 5) Update the existing 'How to run' fenced bash block to also show an example invocation of scripts/start_wave_B_tmux.sh and scripts/wave_summary.py --waves phase1A. (B) learnings.md edits (append-only, do not change any prior lines): append a new H2 section '## Phase 1 Wave B and C plan + Phase 2 VolumeDP-FL prep (2026-04-30)' with bullet points covering: Wave A in flight (close_box jvsplit/jpdirsplit/jpsrvsplit, slide jpdirect), Wave B servo gain sweep (g30c10, g20c05) for close_box+slide, slide chunk4exec2 reserved for follow-up wave, Wave C vision ablation prep (cnn/dinov3-frozen/dino-depth-frozen all on slide JV direct), Phase 2 VolumeDP-FL framing (per-client extrinsics realistic + paper argument FLAME identifies camera pose as variation but doesn't use it), and a note that VolumeDPFullDinoDepthEncoder will be implemented by Claude in agent.py outside ralph.",
+      "acceptanceCriteria": [
+        "docs/experiment_matrix.md has been edited to include rows for the six US-011 configs in the Phase 1 table and a row for Wave A status",
+        "docs/experiment_matrix.md contains a new H2 section 'Wave B - Servo gain/clip sweep' with a markdown table",
+        "docs/experiment_matrix.md contains a new H2 section 'Wave C - Slide vision ablation (Phase 2 candidate)' with a markdown table",
+        "docs/experiment_matrix.md contains a new H2 section 'Phase 2 - VolumeDP-FL with per-client extrinsics'",
+        "docs/experiment_matrix.md 'How to run' section mentions scripts/start_wave_B_tmux.sh and scripts/wave_summary.py",
+        "learnings.md has been appended with a section titled '## Phase 1 Wave B and C plan + Phase 2 VolumeDP-FL prep (2026-04-30)'",
+        "Existing learnings.md content is preserved (append-only)",
+        "ralph_verify.py passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Updated docs/experiment_matrix.md with the six Wave B config rows, a phase1A in-flight status row, new Wave B / Wave C / Phase 2 planning sections, and added example invocations for scripts/start_wave_B_tmux.sh and scripts/wave_summary.py --waves phase1A. Appended the required 2026-04-30 Wave B/C and Phase 2 prep section to learnings.md without modifying prior content, and verified the repo with python ralph_verify.py on 2026-04-30."
+    }
+  ]
+}
