@@ -123,6 +123,15 @@ def get_agent_model_kwargs(config) -> dict:
         "volumedp_action_token_dim": int(
             getattr(config.model, "volumedp_action_token_dim", 8) or 8
         ),
+        "volumedp_use_softmax_tokens": bool(
+            getattr(config.model, "volumedp_use_softmax_tokens", False)
+        ),
+        "volumedp_goal_token_dim": int(
+            getattr(config.model, "volumedp_goal_token_dim", 0) or 0
+        ),
+        "volumedp_emit_voxel_weights": bool(
+            getattr(config.model, "volumedp_emit_voxel_weights", False)
+        ),
         "proprio_visual_fusion_mode": str(
             getattr(config.model, "proprio_visual_fusion_mode", "token") or "token"
         ),

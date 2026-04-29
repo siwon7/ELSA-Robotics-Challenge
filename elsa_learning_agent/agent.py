@@ -70,6 +70,9 @@ class Agent():
         volumedp_decoder_layers=2,
         volumedp_decoder_heads=4,
         volumedp_action_token_dim=8,
+        volumedp_use_softmax_tokens=False,
+        volumedp_goal_token_dim=0,
+        volumedp_emit_voxel_weights=False,
         proprio_visual_fusion_mode="token",
         proprio_visual_fusion_hidden_dim=256,
         proprio_visual_fusion_scale=1.0,
@@ -109,6 +112,9 @@ class Agent():
         volumedp_decoder_layers=volumedp_decoder_layers,
         volumedp_decoder_heads=volumedp_decoder_heads,
         volumedp_action_token_dim=volumedp_action_token_dim,
+        volumedp_use_softmax_tokens=volumedp_use_softmax_tokens,
+        volumedp_goal_token_dim=volumedp_goal_token_dim,
+        volumedp_emit_voxel_weights=volumedp_emit_voxel_weights,
         proprio_visual_fusion_mode=proprio_visual_fusion_mode,
         proprio_visual_fusion_hidden_dim=proprio_visual_fusion_hidden_dim,
         proprio_visual_fusion_scale=proprio_visual_fusion_scale,
@@ -480,7 +486,15 @@ def _project_world_points_to_normalized_grid(
 
 
 class VolumeDPLiteDinoEncoder(nn.Module):
-    """Practical VolumeDP-style encoder with projected voxel tokens from a DINO feature map."""
+    """Practical VolumeDP-style encoder with projected voxel tokens from a DINO feature map.
+
+    Supports two token-selection modes:
+    - top-k (default, legacy): pick the highest-scoring `num_spatial_tokens` voxels.
+    - softmax token learner (use_softmax_tokens=True): TokenLearner-style soft
+      weighted sum across all valid voxels. Optional goal token concat enables
+      goal/task conditioning. emit_voxel_weights exposes the softmax weights for
+      auxiliary supervision (e.g. EE-mask BCE).
+    """
 
     def __init__(
         self,
@@ -495,6 +509,9 @@ class VolumeDPLiteDinoEncoder(nn.Module):
         volume_bounds=None,
         grid_shape=(8, 8, 8),
         num_spatial_tokens=32,
+        use_softmax_tokens=False,
+        goal_token_dim=0,
+        emit_voxel_weights=False,
     ):
         super().__init__()
         if input_channels != 3:
@@ -571,6 +588,25 @@ class VolumeDPLiteDinoEncoder(nn.Module):
             )
         self.backbone.eval()
 
+        self.use_softmax_tokens = bool(use_softmax_tokens)
+        self.goal_token_dim = int(max(0, goal_token_dim))
+        self.emit_voxel_weights = bool(emit_voxel_weights)
+        if self.use_softmax_tokens:
+            weight_input_dim = self.output_dim + self.goal_token_dim
+            self.weight_head = nn.Sequential(
+                nn.Linear(weight_input_dim, self.output_dim),
+                nn.GELU(),
+                nn.Linear(self.output_dim, int(self.num_spatial_tokens)),
+            )
+            if self.goal_token_dim > 0:
+                self.goal_token = nn.Parameter(torch.zeros(self.goal_token_dim))
+                nn.init.trunc_normal_(self.goal_token, std=0.02)
+            else:
+                self.goal_token = None
+        else:
+            self.weight_head = None
+            self.goal_token = None
+
     def train(self, mode=True):
         super().train(mode)
         self.backbone.eval()
@@ -619,13 +655,34 @@ class VolumeDPLiteDinoEncoder(nn.Module):
         normalized_voxels = (self.voxel_centers.to(x.device) - bounds_min) / (bounds_max - bounds_min).clamp_min(1e-6)
         voxel_tokens = voxel_tokens + self.voxel_pos_mlp(normalized_voxels).unsqueeze(0)
 
+        global_embedding = self.global_projector(cls_token)
+
+        if self.use_softmax_tokens:
+            if self.goal_token is not None:
+                goal_broadcast = self.goal_token.view(1, 1, -1).expand(
+                    voxel_tokens.shape[0], voxel_tokens.shape[1], -1
+                )
+                weight_input = torch.cat([voxel_tokens, goal_broadcast], dim=-1)
+            else:
+                weight_input = voxel_tokens
+            weight_logits = self.weight_head(weight_input)
+            weight_logits = weight_logits.masked_fill(~valid.unsqueeze(-1), float("-inf"))
+            weights = F.softmax(weight_logits, dim=1)
+            spatial_tokens = torch.einsum("bvn,bvc->bnc", weights, voxel_tokens)
+            output = {
+                "global_embedding": global_embedding,
+                "spatial_tokens": spatial_tokens,
+            }
+            if self.emit_voxel_weights:
+                output["voxel_weights"] = weights
+            return output
+
         scores = self.token_scorer(voxel_tokens).squeeze(-1)
         scores = scores.masked_fill(~valid, float("-inf"))
         topk = min(self.num_spatial_tokens, voxel_tokens.shape[1])
         topk_indices = scores.topk(topk, dim=1).indices
         gather_index = topk_indices.unsqueeze(-1).expand(-1, -1, voxel_tokens.shape[-1])
         spatial_tokens = torch.gather(voxel_tokens, dim=1, index=gather_index)
-        global_embedding = self.global_projector(cls_token)
         return {
             "global_embedding": global_embedding,
             "spatial_tokens": spatial_tokens,
@@ -849,6 +906,248 @@ class FrozenDinoDepthConcatEncoder(nn.Module):
         depth_features = self.depth_encoder(x)
         return torch.cat([dino_features, depth_features], dim=-1)
 
+
+class VolumeDPFullDinoDepthEncoder(nn.Module):
+    """VolumeDP-style encoder lifting BOTH DINO patch features and Depth-Anything
+    predicted-depth into a shared world-frame voxel grid via per-client camera
+    extrinsics+intrinsics. Always uses a softmax (TokenLearner-style) goal-aware
+    token learner over voxels; optionally exposes the softmax weights for an
+    EE-mask BCE auxiliary supervision hook.
+
+    Requires obs_context['front_camera_extrinsics'] and ['front_camera_intrinsics'].
+    """
+
+    def __init__(
+        self,
+        input_channels=3,
+        output_dim=256,
+        use_dino_lora=False,
+        dino_lora_rank=8,
+        dino_lora_alpha=16.0,
+        dino_lora_dropout=0.0,
+        dino_lora_num_blocks=0,
+        dino_lora_target_modules="qkv,proj",
+        depth_model_id="LiheYoung/depth-anything-small-hf",
+        volume_bounds=None,
+        grid_shape=(16, 16, 16),
+        num_spatial_tokens=64,
+        goal_token_dim=0,
+        emit_voxel_weights=False,
+        depth_feature_dim=32,
+    ):
+        super().__init__()
+        if input_channels != 3:
+            raise ValueError(
+                "volumedp_full_dinov3_depth expects 3-channel RGB input, "
+                f"got input_channels={input_channels}."
+            )
+        try:
+            import timm
+            from timm.data import resolve_model_data_config
+        except ImportError as exc:
+            raise ImportError(
+                "timm is required when vision_backbone='volumedp_full_dinov3_depth'."
+            ) from exc
+        try:
+            from transformers import AutoImageProcessor, DepthAnythingForDepthEstimation
+        except ImportError as exc:
+            raise ImportError(
+                "transformers is required when vision_backbone='volumedp_full_dinov3_depth'."
+            ) from exc
+
+        self.dino_backbone = timm.create_model(
+            "vit_small_patch16_dinov3",
+            pretrained=True,
+            num_classes=0,
+        )
+        self.use_dino_lora = bool(use_dino_lora)
+        self.output_dim = int(output_dim)
+        self.num_spatial_tokens = int(num_spatial_tokens)
+        self.goal_token_dim = int(max(0, goal_token_dim))
+        self.emit_voxel_weights = bool(emit_voxel_weights)
+        self.depth_feature_dim = int(max(1, depth_feature_dim))
+
+        self.depth_image_processor = AutoImageProcessor.from_pretrained(depth_model_id)
+        self.depth_backbone = DepthAnythingForDepthEstimation.from_pretrained(depth_model_id)
+        for param in self.depth_backbone.parameters():
+            param.requires_grad = False
+        self.depth_backbone.eval()
+
+        self.depth_expand = nn.Sequential(
+            nn.Linear(1, self.depth_feature_dim),
+            nn.GELU(),
+            nn.Linear(self.depth_feature_dim, self.depth_feature_dim),
+        )
+
+        dino_dim = self.dino_backbone.num_features
+        self.voxel_fusion = nn.Sequential(
+            nn.Linear(dino_dim + self.depth_feature_dim, self.output_dim),
+            nn.GELU(),
+            nn.Linear(self.output_dim, self.output_dim),
+        )
+
+        self.global_projector = nn.Sequential(
+            nn.Linear(dino_dim, self.output_dim),
+            nn.ReLU(),
+        )
+
+        self.voxel_pos_mlp = nn.Sequential(
+            nn.Linear(3, self.output_dim),
+            nn.ReLU(),
+            nn.Linear(self.output_dim, self.output_dim),
+        )
+
+        bounds = volume_bounds or [-0.45, -0.55, 0.70, 0.45, 0.55, 1.35]
+        self.register_buffer(
+            "voxel_centers",
+            _make_voxel_centers(bounds, grid_shape).float(),
+            persistent=False,
+        )
+        self.register_buffer(
+            "volume_bounds",
+            torch.tensor(bounds, dtype=torch.float32),
+            persistent=False,
+        )
+
+        data_cfg = resolve_model_data_config(self.dino_backbone)
+        self.register_buffer(
+            "dino_mean",
+            torch.tensor(data_cfg.get("mean", (0.485, 0.456, 0.406)), dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "dino_std",
+            torch.tensor(data_cfg.get("std", (0.229, 0.224, 0.225)), dtype=torch.float32).view(1, 3, 1, 1),
+            persistent=False,
+        )
+
+        for param in self.dino_backbone.parameters():
+            param.requires_grad = False
+        if use_dino_lora:
+            _inject_dino_lora(
+                self.dino_backbone,
+                rank=int(dino_lora_rank),
+                alpha=float(dino_lora_alpha),
+                dropout=float(dino_lora_dropout),
+                num_blocks=int(dino_lora_num_blocks),
+                target_modules=dino_lora_target_modules,
+            )
+        self.dino_backbone.eval()
+
+        weight_input_dim = self.output_dim + self.goal_token_dim
+        self.weight_head = nn.Sequential(
+            nn.Linear(weight_input_dim, self.output_dim),
+            nn.GELU(),
+            nn.Linear(self.output_dim, int(self.num_spatial_tokens)),
+        )
+        if self.goal_token_dim > 0:
+            self.goal_token = nn.Parameter(torch.zeros(self.goal_token_dim))
+            nn.init.trunc_normal_(self.goal_token, std=0.02)
+        else:
+            self.goal_token = None
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.dino_backbone.eval()
+        self.depth_backbone.eval()
+        return self
+
+    def _depth_predicted(self, x):
+        image_batch = ((x * 0.5) + 0.5).clamp(0.0, 1.0)
+        images = [
+            sample.detach().permute(1, 2, 0).cpu().numpy()
+            for sample in image_batch
+        ]
+        encoded = self.depth_image_processor(images=images, return_tensors="pt")
+        pixel_values = encoded["pixel_values"].to(x.device)
+        with torch.no_grad():
+            depth = self.depth_backbone(pixel_values).predicted_depth.unsqueeze(1)
+        depth_min = depth.amin(dim=(-2, -1), keepdim=True)
+        depth_max = depth.amax(dim=(-2, -1), keepdim=True)
+        depth = (depth - depth_min) / (depth_max - depth_min + 1e-6)
+        return depth
+
+    def forward(self, x, obs_context=None):
+        if obs_context is None:
+            raise ValueError(
+                "VolumeDPFullDinoDepthEncoder requires obs_context with camera intrinsics/extrinsics."
+            )
+        intrinsics = obs_context.get("front_camera_intrinsics")
+        extrinsics = obs_context.get("front_camera_extrinsics")
+        if intrinsics is None or extrinsics is None:
+            raise ValueError(
+                "VolumeDPFullDinoDepthEncoder requires front_camera_intrinsics and front_camera_extrinsics."
+            )
+
+        x_norm = ((x * 0.5) + 0.5).clamp(0.0, 1.0)
+        x_norm = (x_norm - self.dino_mean) / self.dino_std
+        if self.use_dino_lora:
+            cls_token, _, dino_feature_map = _extract_vit_tokens(self.dino_backbone, x_norm)
+        else:
+            with torch.no_grad():
+                cls_token, _, dino_feature_map = _extract_vit_tokens(self.dino_backbone, x_norm)
+
+        depth_map = self._depth_predicted(x)
+
+        batch_size = x.shape[0]
+        image_height = int(x.shape[-2])
+        image_width = int(x.shape[-1])
+        grid, valid = _project_world_points_to_normalized_grid(
+            self.voxel_centers.to(x.device),
+            intrinsics.to(x.device),
+            extrinsics.to(x.device),
+            image_height,
+            image_width,
+        )
+        sample_grid = grid.view(batch_size, -1, 1, 2)
+
+        dino_sampled = F.grid_sample(
+            dino_feature_map,
+            sample_grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        ).squeeze(-1).transpose(1, 2)
+
+        depth_sampled = F.grid_sample(
+            depth_map,
+            sample_grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=True,
+        ).squeeze(-1).transpose(1, 2)
+
+        depth_features = self.depth_expand(depth_sampled)
+        voxel_features_raw = torch.cat([dino_sampled, depth_features], dim=-1)
+        voxel_features = self.voxel_fusion(voxel_features_raw)
+
+        bounds_min = self.volume_bounds[:3].to(x.device)
+        bounds_max = self.volume_bounds[3:].to(x.device)
+        normalized_voxels = (self.voxel_centers.to(x.device) - bounds_min) / (bounds_max - bounds_min).clamp_min(1e-6)
+        voxel_features = voxel_features + self.voxel_pos_mlp(normalized_voxels).unsqueeze(0)
+
+        if self.goal_token is not None:
+            goal_broadcast = self.goal_token.view(1, 1, -1).expand(
+                batch_size, voxel_features.shape[1], -1
+            )
+            weight_input = torch.cat([voxel_features, goal_broadcast], dim=-1)
+        else:
+            weight_input = voxel_features
+        weight_logits = self.weight_head(weight_input)
+        weight_logits = weight_logits.masked_fill(~valid.unsqueeze(-1), float("-inf"))
+        weights = F.softmax(weight_logits, dim=1)
+        spatial_tokens = torch.einsum("bvn,bvc->bnc", weights, voxel_features)
+
+        global_embedding = self.global_projector(cls_token)
+        output = {
+            "global_embedding": global_embedding,
+            "spatial_tokens": spatial_tokens,
+        }
+        if self.emit_voxel_weights:
+            output["voxel_weights"] = weights
+        return output
+
+
 class MLPEncoder(nn.Module):
     """MLP to encode the low-dimensional state."""
     def __init__(self, input_dim, output_dim=128):
@@ -1007,6 +1306,9 @@ class BCPolicy(nn.Module):
         volumedp_decoder_layers=2,
         volumedp_decoder_heads=4,
         volumedp_action_token_dim=8,
+        volumedp_use_softmax_tokens=False,
+        volumedp_goal_token_dim=0,
+        volumedp_emit_voxel_weights=False,
         proprio_visual_fusion_mode="token",
         proprio_visual_fusion_hidden_dim=256,
         proprio_visual_fusion_scale=1.0,
@@ -1033,6 +1335,9 @@ class BCPolicy(nn.Module):
             )
         self.policy_head_type = str(policy_head_type)
         self.volumedp_action_token_dim = int(volumedp_action_token_dim)
+        self.volumedp_use_softmax_tokens = bool(volumedp_use_softmax_tokens)
+        self.volumedp_goal_token_dim = int(max(0, volumedp_goal_token_dim))
+        self.volumedp_emit_voxel_weights = bool(volumedp_emit_voxel_weights)
         if self.policy_head_type not in {"mlp", "diffusion"}:
             raise ValueError(
                 "policy_head_type must be one of ['mlp', 'diffusion'], "
@@ -1138,6 +1443,9 @@ class BCPolicy(nn.Module):
                 volume_bounds=volumedp_volume_bounds,
                 grid_shape=volumedp_grid_shape,
                 num_spatial_tokens=volumedp_num_spatial_tokens,
+                use_softmax_tokens=self.volumedp_use_softmax_tokens,
+                goal_token_dim=self.volumedp_goal_token_dim,
+                emit_voxel_weights=self.volumedp_emit_voxel_weights,
             )
         elif vision_backbone == "volumedp_lite_camerafree_dinov3_vits16":
             self.cnn_encoder = CameraFreeVolumeDPLiteDinoEncoder(
@@ -1150,6 +1458,22 @@ class BCPolicy(nn.Module):
                 dino_lora_num_blocks=dino_lora_num_blocks,
                 dino_lora_target_modules=dino_lora_target_modules,
                 num_spatial_tokens=volumedp_num_spatial_tokens,
+            )
+        elif vision_backbone == "volumedp_full_dinov3_depth":
+            self.cnn_encoder = VolumeDPFullDinoDepthEncoder(
+                input_channels=image_channels,
+                output_dim=projector_dim,
+                use_dino_lora=use_dino_lora,
+                dino_lora_rank=dino_lora_rank,
+                dino_lora_alpha=dino_lora_alpha,
+                dino_lora_dropout=dino_lora_dropout,
+                dino_lora_num_blocks=dino_lora_num_blocks,
+                dino_lora_target_modules=dino_lora_target_modules,
+                volume_bounds=volumedp_volume_bounds,
+                grid_shape=volumedp_grid_shape,
+                num_spatial_tokens=volumedp_num_spatial_tokens,
+                goal_token_dim=self.volumedp_goal_token_dim,
+                emit_voxel_weights=self.volumedp_emit_voxel_weights,
             )
         else:
             raise ValueError(
@@ -1192,7 +1516,7 @@ class BCPolicy(nn.Module):
             output_dim=self.state_feature_dim,
         )
         self.proprio_token_proj = None
-        if vision_backbone.startswith("volumedp_lite") and self.proprio_visual_fusion_mode in {
+        if vision_backbone.startswith("volumedp_") and self.proprio_visual_fusion_mode in {
             "token",
             "token_film",
             "global_token_film",
@@ -1262,7 +1586,7 @@ class BCPolicy(nn.Module):
                 hidden_dim=self.diffusion_hidden_dim,
                 timestep_dim=self.diffusion_timestep_dim,
             )
-            if vision_backbone.startswith("volumedp_lite"):
+            if vision_backbone.startswith("volumedp_"):
                 self.multitoken_diffusion_head = MultiTokenDiffusionActionHead(
                     action_dim=self.arm_action_dim,
                     context_dim=512,
@@ -1301,7 +1625,7 @@ class BCPolicy(nn.Module):
             )
 
     def _encode_context(self, image, low_dim_state, obs_context=None):
-        encoder_output = self.cnn_encoder(image, obs_context) if self.vision_backbone.startswith("volumedp_lite") else self.cnn_encoder(image)
+        encoder_output = self.cnn_encoder(image, obs_context) if self.vision_backbone.startswith("volumedp_") else self.cnn_encoder(image)
         spatial_tokens = None
         if isinstance(encoder_output, dict):
             img_embedding = encoder_output["global_embedding"]

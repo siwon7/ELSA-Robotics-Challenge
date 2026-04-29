@@ -272,7 +272,10 @@ def get_image_transform(config_file):
 def requires_observation_context(config) -> bool:
     model_cfg = getattr(config, "model", None)
     vision_backbone = str(getattr(model_cfg, "vision_backbone", "cnn") or "cnn")
-    return vision_backbone == "volumedp_lite_dinov3_vits16"
+    return vision_backbone in {
+        "volumedp_lite_dinov3_vits16",
+        "volumedp_full_dinov3_depth",
+    }
 
 def extract_obs_context(obs):
     misc = getattr(obs, "misc", {}) or {}

@@ -62,6 +62,14 @@ VISION_BACKBONE_REGISTRY: dict[str, VisionBackboneSpec] = {
         trainable_parts="DINO LoRA/projectors + spatial token module + policy head",
         notes="Benchmark-friendly variant without camera calibration. Uses DINO patch tokens and a proprio token in the decoder.",
     ),
+    "volumedp_full_dinov3_depth": VisionBackboneSpec(
+        name="volumedp_full_dinov3_depth",
+        display_name="VolumeDP-full with DINOv3 + Depth-Anything dual voxel lift",
+        dependency="timm + transformers",
+        upstream_source="timm pretrained vit_small_patch16_dinov3 + LiheYoung/depth-anything-small-hf + local volumetric token module",
+        trainable_parts="DINO LoRA + depth/voxel projectors + softmax token learner + policy head",
+        notes="Per-client camera intrinsics/extrinsics required. Lifts BOTH DINO patch features and Depth-Anything predicted depth into a shared world-frame voxel grid; uses goal-aware softmax (TokenLearner) over voxels with optional EE-mask BCE auxiliary supervision hook (emit_voxel_weights).",
+    ),
 }
 
 
