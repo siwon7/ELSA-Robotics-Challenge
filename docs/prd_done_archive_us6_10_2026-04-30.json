@@ -1,0 +1,103 @@
+{
+  "project": "ELSA-FLAME-Improvement-Phase1-ActionSweep",
+  "branchName": "main",
+  "userStories": [
+    {
+      "id": "US-006",
+      "title": "Close box JP direct/servo splitgripper diffusion configs (4 files)",
+      "description": "Create four close_box experiment YAML configs that combine DINO+Depth LoRA8 diffusion vision (vision_backbone: dinov3_depth_anything_small_frozen, use_dino_lora: true, dino_lora_rank: 8, dino_lora_alpha: 16.0, dino_lora_num_blocks: 8, dino_lora_target_modules: qkv, policy_head_type: diffusion, diffusion_num_steps: 20, diffusion_hidden_dim: 512, diffusion_timestep_dim: 128, projector_dim: 192, normalize_branch_embeddings: true, low_dim_dropout_prob: 0.2, learning_rate: 0.0003, weight_decay: 1.0e-05, optimizer: adam, action_output_activation: identity) with separate_gripper_head: true and gripper_loss_weight: 4.0 and gripper_head_hidden_dim: 128. Use the existing experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml and experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo.yaml as structural templates and ADD the three model fields above. Create exactly these four new files (do not modify existing ones): (1) experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_splitgripper.yaml -- action_pipeline_preset: joint_position_direct, action_representation: auto, no chunk fields. (2) experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_splitgripper.yaml -- action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo, action_representation: auto, joint_velocity_servo_gain: 20.0, joint_velocity_servo_clip: 1.0, joint_velocity_servo_steps: 2, joint_velocity_servo_tolerance: 0.01. (3) experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_chunk4exec2_splitgripper.yaml -- like (1) but also dataset.action_chunk_len: 4 and dataset.receding_horizon_execute_steps: 2. (4) experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_chunk4exec2_splitgripper.yaml -- like (2) but also dataset.action_chunk_len: 4 and dataset.receding_horizon_execute_steps: 2. All four use dataset.task: close_box, dataset.env_id: 0, dataset.env_id_test: 0, dataset.test_split: 0.9, dataset.batch_size: 32, dataset.num_workers: 4, dataset.num_workers_server: 32, dataset.enable_live_eval: false, dataset.num_episodes_live: 5, dataset.test_env_idx_range: [400, 401], dataset.test_live_idxs: [400], dataset.final_eval_env_idx_range: [400, 410], dataset.final_eval_live_idxs: [400, 401, 402, 403, 404, 405, 406, 407, 408, 409], dataset.final_test_env_idx_range: [410, 420], dataset.final_test_live_idxs: [410, 411, 412, 413, 414, 415, 416, 417, 418, 419], dataset.root_dir: /mnt/raid0/siwon/data/ELSA-Robotics-Challenge/datasets/training, dataset.root_eval_dir: /mnt/raid0/siwon/data/ELSA-Robotics-Challenge/datasets/eval, dataset.root_test_dir: /mnt/raid0/siwon/data/ELSA-Robotics-Challenge/datasets/test, transform.normalize_mean: [0.5, 0.5, 0.5], transform.normalize_std: [0.5, 0.5, 0.5], transform.action_min: [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, 0.0], transform.action_max: [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 1.0], federated.method_preset: fedavg, federated.prox_mu: 0.0, model.epochs: -1.",
+      "acceptanceCriteria": [
+        "experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_splitgripper.yaml exists and parses as YAML",
+        "experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_splitgripper.yaml exists and parses as YAML",
+        "experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_chunk4exec2_splitgripper.yaml exists and parses as YAML",
+        "experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_chunk4exec2_splitgripper.yaml exists and parses as YAML",
+        "All four configs set model.separate_gripper_head: true and model.gripper_loss_weight: 4.0",
+        "All four configs set dataset.task: close_box and model.action_output_activation: identity",
+        "JP servo configs set joint_velocity_servo_gain: 20.0 and joint_velocity_servo_clip: 1.0",
+        "chunk4exec2 configs set dataset.action_chunk_len: 4 and dataset.receding_horizon_execute_steps: 2",
+        "ralph_verify.py passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Created the four close_box JP direct/servo splitgripper diffusion configs using the existing JP templates, added separate_gripper_head/gripper_head_hidden_dim/gripper_loss_weight, preserved the specified dataset and transform settings, and verified with targeted YAML checks plus python ralph_verify.py."
+    },
+    {
+      "id": "US-007",
+      "title": "Slide JP direct and JP servo same-env configs with DINO+Depth LoRA8",
+      "description": "Create two slide_block_to_target experiment YAML configs that mirror the structure of experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml (DINO+Depth LoRA8 diffusion, no separate_gripper_head) but with task-name prefix and JP action interfaces. Slide does not need separate_gripper_head. Create exactly these two new files (do not modify existing ones): (1) experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml -- action_pipeline_preset: joint_position_direct, action_representation: auto, action_output_activation: identity. (2) experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo.yaml -- action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo, action_representation: auto, action_output_activation: identity, joint_velocity_servo_gain: 20.0, joint_velocity_servo_clip: 1.0, joint_velocity_servo_steps: 2, joint_velocity_servo_tolerance: 0.01. Both files set dataset.task: slide_block_to_target. Use the same dataset, model, federated, and transform structure as the JV direct base config but transform.action_min must be [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, 0.0] and transform.action_max must be [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 1.0] for JP bounds. Keep model.policy_head_type: diffusion, model.use_dino_lora: true with rank 8, model.vision_backbone: dinov3_depth_anything_small_frozen.",
+      "acceptanceCriteria": [
+        "experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml exists and parses as YAML",
+        "experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo.yaml exists and parses as YAML",
+        "Both configs set dataset.task: slide_block_to_target",
+        "Both configs set model.action_output_activation: identity",
+        "Both configs set transform.action_min and transform.action_max to JP joint bounds",
+        "JP direct config sets dataset.action_pipeline_preset: joint_position_direct",
+        "JP servo config sets dataset.action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo and joint_velocity_servo_gain: 20.0",
+        "Both configs set model.policy_head_type: diffusion and model.vision_backbone: dinov3_depth_anything_small_frozen",
+        "Both configs set model.use_dino_lora: true and model.dino_lora_rank: 8",
+        "Neither config sets model.separate_gripper_head: true",
+        "ralph_verify.py passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Created the two slide_block_to_target JP direct/servo same-env DINO+Depth LoRA8 diffusion configs with task-specific dataset fields, identity action outputs, JP joint bounds, servo settings for the JP servo variant, and verified them with YAML parsing plus python ralph_verify.py."
+    },
+    {
+      "id": "US-008",
+      "title": "Generalized per-GPU pair-sweep tmux launcher",
+      "description": "Create scripts/start_long_pair_sweep_tmux.sh, an executable bash script that launches one independent same-env training run per GPU in a single tmux session. Usage: scripts/start_long_pair_sweep_tmux.sh <session_name> <run_suffix> <gpu_csv> <task1:config1> [<task2:config2> ...]. The gpu_csv is a comma-separated list of GPU indices (e.g., '0,1,2,3'). Each task:config pair is mapped to one GPU in order. The number of GPUs must equal the number of pairs; otherwise exit with error. For each pair, create a tmux window named gpu<idx> that invokes scripts/run_same_env_config_one_task.sh with arguments TASK GPU CONFIG_PATH EPOCHS ENV_ID RUN_NAME EVAL_EPISODES SEED. Default EPOCHS env is 100, default EVAL_EPISODES env is 20, default SEED env is 0, default ENV_ID env is 0. The RUN_NAME passed to the inner script must be ${task_basename}_${run_suffix}_e${EPOCHS}_s${SEED}, where task_basename is the task name with no slashes. Tee the inner script's output to ${ELSA_ARTIFACT_ROOT:-/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts}/logs/long_pair_sweep/${run_suffix}/gpu${gpu}_${task}.log. Use set -euo pipefail. Verify each config file exists before launching; abort with error if missing. Kill any prior tmux session with the same name before creating new. Print a final summary line listing session_name and log dir. chmod +x the script.",
+      "acceptanceCriteria": [
+        "scripts/start_long_pair_sweep_tmux.sh exists and is executable",
+        "Script uses #!/usr/bin/env bash and set -euo pipefail",
+        "Script accepts session_name, run_suffix, gpu_csv, and one or more task:config pairs as positional arguments",
+        "Script errors out when number of GPUs does not equal number of task:config pairs",
+        "Script errors out when a config file does not exist",
+        "Script invokes scripts/run_same_env_config_one_task.sh for each pair",
+        "Script writes logs under ${ELSA_ARTIFACT_ROOT:-/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts}/logs/long_pair_sweep/<run_suffix>/",
+        "Script defaults EPOCHS to 100 and EVAL_EPISODES to 20 when env vars are unset",
+        "Running 'bash scripts/start_long_pair_sweep_tmux.sh' with no args exits non-zero with a usage message",
+        "ralph_verify.py passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Added scripts/start_long_pair_sweep_tmux.sh as an executable tmux launcher for ordered GPU/task:config pairs with default EPOCHS=100, EVAL_EPISODES=20, SEED=0, and ENV_ID=0, pre-launch config existence checks, per-GPU long_pair_sweep logs, and run names of the form <task>_<run_suffix>_e<EPOCHS>_s<SEED>; validated usage/count/missing-config failures, simulated tmux command construction with a stubbed tmux binary, and ran python ralph_verify.py successfully."
+    },
+    {
+      "id": "US-009",
+      "title": "Same-env sweep results aggregator script",
+      "description": "Create scripts/aggregate_sameenv_sweep_results.py, a Python script that scans the same-env results tree and emits a CSV summary. Usage: python scripts/aggregate_sameenv_sweep_results.py [--result-root ROOT] [--tasks TASK1 TASK2 ...] [--out OUT_PATH] [--dry-run]. Default --result-root is ${ELSA_ARTIFACT_ROOT:-/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts}/results/same_env_suite. Default --tasks is close_box slide_block_to_target insert_onto_square_peg scoop_with_spatula. Default --out is results/sameenv_sweep_summary.csv. The script must (1) iterate over each task subdir under result-root, (2) for each run-name subdir, glob env_*/result.json, (3) for each result.json found, parse its sibling resolved_config.yaml (one directory up at run_dir/resolved_config.yaml) using PyYAML to extract action_pipeline_preset, vision_backbone, separate_gripper_head, policy_head_type, dino_lora_rank, action_chunk_len (default 1 if missing), receding_horizon_execute_steps (default 1 if missing), joint_velocity_servo_gain (empty if missing), joint_velocity_servo_clip (empty if missing); (4) extract sr or success_rate or mean_per_env_sr from result.json (try keys in this order, fall back to None); (5) extract rmse from offline_seen_env.rmse if present, otherwise None; (6) write a CSV with columns task, run_name, env_dir, action_pipeline, vision_backbone, separate_gripper_head, policy_head_type, dino_lora_rank, action_chunk_len, receding_horizon_execute_steps, joint_velocity_servo_gain, joint_velocity_servo_clip, sr, rmse, result_path. With --dry-run, print the same rows to stdout as a TSV without writing to disk. The script must support 'python scripts/aggregate_sameenv_sweep_results.py --help' and exit 0 with --help. Use argparse. Use only standard library plus PyYAML.",
+      "acceptanceCriteria": [
+        "scripts/aggregate_sameenv_sweep_results.py exists",
+        "Running 'python scripts/aggregate_sameenv_sweep_results.py --help' exits 0 and prints argument descriptions for --result-root, --tasks, --out, --dry-run",
+        "Script imports yaml, json, argparse, csv, pathlib",
+        "Script uses argparse.ArgumentParser",
+        "Default --result-root resolves to ${ELSA_ARTIFACT_ROOT}/results/same_env_suite or its hardcoded fallback",
+        "Default --out is results/sameenv_sweep_summary.csv",
+        "CSV has at minimum the columns task, run_name, action_pipeline, sr, rmse, result_path",
+        "ralph_verify.py passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Added scripts/aggregate_sameenv_sweep_results.py with argparse-based --result-root/--tasks/--out/--dry-run support, CSV output to results/sameenv_sweep_summary.csv by default, TSV dry-run output, config-field extraction from resolved_config.yaml with defaults for chunk/execute steps and optional servo fields, and verified it with --help, a synthetic result tree, a dry-run against the real same_env_suite artifact tree, and python ralph_verify.py."
+    },
+    {
+      "id": "US-010",
+      "title": "Phase 1 experiment matrix doc and learnings update",
+      "description": "Create docs/experiment_matrix.md as a single source of truth for the current sweep plan. The doc must contain: (a) an H1 title and a one-paragraph context paragraph stating the goal is to push close_box and slide_block_to_target to same-env SR 0.70-0.80 before moving to vision/proprio ablation. (b) An H2 'Replay ceilings' section with a markdown table of replay ceiling per task per action interface (JV direct, JP direct, JP->JV servo) using values from learnings.md. (c) An H2 'Phase 1 - Action sweep on close_box and slide' section with a markdown table whose columns are Task, Action interface, Splitgripper, Chunk, Config path, Status, Best SR. Include rows for the close_box JP direct/servo splitgripper variants from US-006 and slide JP direct/servo variants from US-007, plus the existing close_box JV direct splitgripper e100 (experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml) and slide JV direct (experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml). Status column is one of pending, running, done. Best SR column is empty for now. (d) An H2 'Phase 2 - Vision and proprio ablation' section with a brief paragraph saying it will be designed after Phase 1 winners are known. (e) An H2 'Phase 3 - Federated baseline and strategy' section with a brief paragraph saying it depends on Phase 2. (f) An H2 'How to run' section with a fenced bash code block showing an example invocation of scripts/start_long_pair_sweep_tmux.sh and scripts/aggregate_sameenv_sweep_results.py from US-008 and US-009. Additionally, append (do not modify existing content) a new H2 section to learnings.md titled '## Phase 1 - close+slide action+servo sweep (planned 2026-04-30)' with bullet points: planned SR target 0.70-0.80, configs covered, GPU plan (1 GPU = 1 long run, 4 in parallel via scripts/start_long_pair_sweep_tmux.sh), and a note that insert and scoop remain at SR 0.0/0.2 even with JP configs and require diagnostic work in a later batch.",
+      "acceptanceCriteria": [
+        "docs/experiment_matrix.md exists",
+        "docs/experiment_matrix.md contains an H2 'Replay ceilings' section with a markdown table",
+        "docs/experiment_matrix.md contains an H2 'Phase 1 - Action sweep on close_box and slide' section with a markdown table",
+        "docs/experiment_matrix.md mentions experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_splitgripper.yaml and experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml",
+        "docs/experiment_matrix.md contains H2 'Phase 2' and H2 'Phase 3' sections",
+        "docs/experiment_matrix.md contains H2 'How to run' with a fenced bash code block",
+        "learnings.md has been appended with a section titled '## Phase 1 - close+slide action+servo sweep (planned 2026-04-30)'",
+        "Existing learnings.md content is preserved (append-only)",
+        "ralph_verify.py passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Added docs/experiment_matrix.md as the Phase 1 sweep source of truth with replay-ceiling and close+slide action-sweep tables, appended the planned 2026-04-30 close+slide sweep section to learnings.md without modifying prior content, and verified with python ralph_verify.py."
+    }
+  ]
+}
