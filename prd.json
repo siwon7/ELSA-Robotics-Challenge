@@ -73,7 +73,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 4,
-      "passes": false
+      "passes": true,
+      "notes": "Added scripts/start_wave_B_tmux.sh as an executable wrapper around scripts/start_long_pair_sweep_tmux.sh for the four primary Wave B runs on GPUs 0-3 with defaults EPOCHS=50, EVAL_EPISODES=20, SEED=0, and ENV_ID=0. Verified bash syntax with bash -n, confirmed the script is executable, and ran python ralph_verify.py successfully on 2026-04-30."
     },
     {
       "id": "US-015",
