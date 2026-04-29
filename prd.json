@@ -19,7 +19,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 1,
-      "passes": false
+      "passes": true,
+      "notes": "Added the six Wave B same-env configs for close_box servo gain/clip variants and slide servo/direct chunk4exec2 variants. Verified YAML parsing and ran python ralph_verify.py successfully on 2026-04-30."
     },
     {
       "id": "US-012",
