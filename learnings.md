@@ -40,3 +40,11 @@
 - Configs covered: `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_splitgripper.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_splitgripper.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpdirect_chunk4exec2_splitgripper.yaml`, `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_chunk4exec2_splitgripper.yaml`, `experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml`, `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml`, and `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo.yaml`.
 - GPU plan: 1 GPU = 1 long run, 4 in parallel via `scripts/start_long_pair_sweep_tmux.sh`.
 - Insert and scoop remain at SR 0.0/0.2 even with JP configs and require diagnostic work in a later batch.
+
+## Phase 1 Wave B and C plan + Phase 2 VolumeDP-FL prep (2026-04-30)
+- Wave A is in flight for `close_box` (`jvsplit`, `jpdirsplit`, `jpsrvsplit`) plus `slide_block_to_target` (`jpdirect`).
+- Wave B is the servo gain/clip sweep for `close_box` and `slide_block_to_target`, centered on `g30c10` and `g20c05`.
+- `slide_block_to_target` chunk4/exec2 variants (`jpdirect` and `jpservo`) are reserved for a follow-up wave rather than the primary Wave B launcher.
+- Wave C prepares slide-only vision ablations on JV direct with `cnn`, `dinov3_vits16_frozen`, and `dinov3_depth_anything_small_frozen`.
+- Phase 2 VolumeDP-FL framing: per-client extrinsics are realistic because each federated client knows its own camera calibration, and FLAME identifies camera pose as a variation factor but does not use that signal directly.
+- `VolumeDPFullDinoDepthEncoder` will be implemented by Claude in `elsa_learning_agent/agent.py`, outside ralph.

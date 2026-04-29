@@ -23,6 +23,34 @@ This document is the single source of truth for the current same-env sweep plan.
 | `slide_block_to_target` | JV direct | no | none | `experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml` | done |  |
 | `slide_block_to_target` | JP direct | no | none | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml` | pending |  |
 | `slide_block_to_target` | JP->JV servo | no | none | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo.yaml` | pending |  |
+| `close_box` | JP->JV servo | yes | none | `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10_splitgripper.yaml` | pending |  |
+| `close_box` | JP->JV servo | yes | none | `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05_splitgripper.yaml` | pending |  |
+| `slide_block_to_target` | JP->JV servo | no | none | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10.yaml` | pending |  |
+| `slide_block_to_target` | JP->JV servo | no | none | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05.yaml` | pending |  |
+| `slide_block_to_target` | JP direct | no | 4/2 | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpdirect_chunk4exec2.yaml` | pending |  |
+| `slide_block_to_target` | JP->JV servo | no | 4/2 | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_chunk4exec2.yaml` | pending |  |
+| `phase1A` | Wave A status | mixed | mixed | `Wave A baseline close_box/slide sweep remains in flight` | pending |  |
+
+## Wave B - Servo gain/clip sweep
+
+| Task | Config path | Servo (gain/clip) | GPU | Status |
+| --- | --- | --- | --- | --- |
+| `close_box` | `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10_splitgripper.yaml` | `30.0/1.0` | `0` | pending |
+| `close_box` | `experiments/close_box_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05_splitgripper.yaml` | `20.0/0.5` | `1` | pending |
+| `slide_block_to_target` | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g30c10.yaml` | `30.0/1.0` | `2` | pending |
+| `slide_block_to_target` | `experiments/slide_block_to_target_sameenv_dino_depth_diffusion_lora8_jpservo_g20c05.yaml` | `20.0/0.5` | `3` | pending |
+
+## Wave C - Slide vision ablation (Phase 2 candidate)
+
+| Vision backbone | Config path | Status |
+| --- | --- | --- |
+| `cnn` | `experiments/slide_block_to_target_sameenv_cnn_diffusion_jvdirect.yaml` | pending |
+| `dinov3_vits16_frozen` | `experiments/slide_block_to_target_sameenv_dinov3_frozen_diffusion_jvdirect.yaml` | pending |
+| `dinov3_depth_anything_small_frozen` | `experiments/slide_block_to_target_sameenv_dino_depth_frozen_diffusion_jvdirect.yaml` | pending |
+
+## Phase 2 - VolumeDP-FL with per-client extrinsics
+
+Per-client camera extrinsics are realistic in federated robotics because each client knows its own calibration, and camera pose is already treated as a perturbation factor in FLAME (Table I, `Δx/Δy/Δz: (-0.05, 0.05)`). The existing `volumedp_lite` encoder will be extended into `VolumeDPFullDinoDepthEncoder` by Claude, not by ralph, to add Depth-Anything voxel lift, goal-aware softmax token weights in place of top-k selection, and an EE-mask BCE auxiliary supervision hook.
 
 ## Phase 2 - Vision and proprio ablation
 
@@ -45,4 +73,8 @@ scripts/start_long_pair_sweep_tmux.sh phase1_close_slide phase1_close_slide 0,1,
 python scripts/aggregate_sameenv_sweep_results.py \
   --tasks close_box slide_block_to_target \
   --out results/phase1_close_slide_summary.csv
+
+scripts/start_wave_B_tmux.sh
+
+python scripts/wave_summary.py --waves phase1A
 ```

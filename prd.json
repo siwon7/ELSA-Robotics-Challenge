@@ -91,7 +91,8 @@
         "ralph_verify.py passes"
       ],
       "priority": 5,
-      "passes": false
+      "passes": true,
+      "notes": "Updated docs/experiment_matrix.md with the six Wave B config rows, a phase1A in-flight status row, new Wave B / Wave C / Phase 2 planning sections, and added example invocations for scripts/start_wave_B_tmux.sh and scripts/wave_summary.py --waves phase1A. Appended the required 2026-04-30 Wave B/C and Phase 2 prep section to learnings.md without modifying prior content, and verified the repo with python ralph_verify.py on 2026-04-30."
     }
   ]
 }
