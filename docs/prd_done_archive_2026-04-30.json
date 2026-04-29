@@ -1,0 +1,78 @@
+{
+  "project": "ELSA-FLAME-Improvement",
+  "branchName": "ralph/jp-diffusion-all-tasks",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "JP direct diffusion configs for insert and scoop",
+      "description": "Create experiment YAML configs for insert_onto_square_peg and scoop_with_spatula using joint_position_direct action pipeline with diffusion head, DINO+Depth LoRA8 vision. These tasks have 0% and 20% replay ceiling with JV direct, so JP direct is mandatory. Use the existing experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml as template but change: (1) action_pipeline_preset to joint_position_direct, (2) action_output_activation to identity, (3) action_min/max to actual robot joint position limits [-2.8973,-1.7628,-2.8973,-3.0718,-2.8973,-0.0175,-2.8973,0.0] and max [2.8973,1.7628,2.8973,-0.0698,2.8973,3.7525,2.8973,1.0]. Create two files: experiments/insert_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml and experiments/scoop_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml with task field set appropriately.",
+      "acceptanceCriteria": [
+        "experiments/insert_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml exists and is valid YAML",
+        "experiments/scoop_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml exists and is valid YAML",
+        "Both configs use action_pipeline_preset: joint_position_direct",
+        "Both configs use action_output_activation: identity",
+        "Both configs use policy_head_type: diffusion",
+        "ralph_verify.py passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Added JP direct diffusion configs for insert_onto_square_peg and scoop_with_spatula with identity activation, JP joint bounds, and task-specific dataset.task values."
+    },
+    {
+      "id": "US-002",
+      "title": "JP servo diffusion configs for insert and scoop",
+      "description": "Create experiment YAML configs for insert_onto_square_peg and scoop_with_spatula using joint_position_to_benchmark_joint_velocity_servo action pipeline with diffusion head, DINO+Depth LoRA8 vision. This is an alternative to JP direct that keeps the benchmark JV interface but uses a servo adapter. Use servo params: gain=20, clip=1.0, steps=2, tolerance=0.01. Create: experiments/insert_sameenv_dino_depth_diffusion_lora8_jpservo.yaml and experiments/scoop_sameenv_dino_depth_diffusion_lora8_jpservo.yaml. Use the same template as US-001 but with action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo and add joint_velocity_servo_gain/clip/steps/tolerance fields under dataset section.",
+      "acceptanceCriteria": [
+        "experiments/insert_sameenv_dino_depth_diffusion_lora8_jpservo.yaml exists and is valid YAML",
+        "experiments/scoop_sameenv_dino_depth_diffusion_lora8_jpservo.yaml exists and is valid YAML",
+        "Both use action_pipeline_preset: joint_position_to_benchmark_joint_velocity_servo",
+        "Both use policy_head_type: diffusion",
+        "ralph_verify.py passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Added JP servo diffusion configs for insert_onto_square_peg and scoop_with_spatula with task-specific dataset.task values, DINO+Depth LoRA8 diffusion settings, JP joint bounds, and servo parameters gain=20.0 clip=1.0 steps=2 tolerance=0.01."
+    },
+    {
+      "id": "US-003",
+      "title": "Close box separate gripper head with longer training config",
+      "description": "Create an experiment config for close_box that combines: (1) DINO+Depth LoRA8 vision_backbone: dinov3_depth_anything_small_frozen, (2) diffusion head, (3) separate_gripper_head: true with gripper_loss_weight: 4.0, (4) JV direct action. Create: experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml. Copy from experiments/sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper.yaml and add task: close_box.",
+      "acceptanceCriteria": [
+        "experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml exists",
+        "Config has separate_gripper_head: true",
+        "Config has gripper_loss_weight: 4.0",
+        "ralph_verify.py passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Added experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml by copying the split-gripper JV direct diffusion template and setting dataset.task to close_box."
+    },
+    {
+      "id": "US-004",
+      "title": "Create unified 4-task experiment launcher script",
+      "description": "Create a bash script scripts/start_jp_diffusion_4task_tmux.sh that launches same-env training for all 4 tasks on 4 GPUs. The script should: (1) accept SESSION_NAME and optional RUN_SUFFIX args, (2) create a tmux session with 4 windows, (3) each window runs: CUDA_VISIBLE_DEVICES=N python scripts/train_same_env_bcpolicy_probe.py --task TASK --dataset-config-path CONFIG --epochs 50 --eval-episodes 20 --device cuda:0 --seed 0 --run-name TASK_RUN_SUFFIX. Use JP direct configs for insert (experiments/insert_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml) and scoop (experiments/scoop_sameenv_dino_depth_diffusion_lora8_jpdirect.yaml), and existing JV configs for slide (experiments/sameenv_dino_depth_diffusion_lora8_jvdirect.yaml) and close_box (experiments/close_box_sameenv_dino_depth_diffusion_lora8_jvdirect_splitgripper_e100.yaml). chmod +x the script.",
+      "acceptanceCriteria": [
+        "scripts/start_jp_diffusion_4task_tmux.sh exists",
+        "Script references all 4 task configs",
+        "Script uses CUDA_VISIBLE_DEVICES for GPU assignment",
+        "ralph_verify.py passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Added scripts/start_jp_diffusion_4task_tmux.sh to launch slide, close_box, insert_onto_square_peg, and scoop_with_spatula in one tmux session across GPUs 0-3 using the specified JV/JP diffusion configs and task_RUN_SUFFIX run names."
+    },
+    {
+      "id": "US-005",
+      "title": "Fix diffusion head clamp bug for JP actions",
+      "description": "In elsa_learning_agent/agent.py, the _sample_diffusion method (around line 1382) ends with 'return current.clamp(-1.0, 1.0)'. This hard clamp is correct for JV actions (bounds [-1,1]) but problematic for JP actions where the diffusion model works in normalized [-1,1] space during training but the clamp can destroy information during iterative denoising. Fix: replace the hard clamp with 'return self.output_activation(current)' so that JV (tanh) still gets bounded to [-1,1] and JP (identity) passes through without lossy clamping. The denormalization in live_rollout.py already handles the final clamping correctly. IMPORTANT: only change the return line in _sample_diffusion, do not modify any other code.",
+      "acceptanceCriteria": [
+        "agent.py _sample_diffusion method does NOT contain .clamp(-1.0, 1.0)",
+        "agent.py _sample_diffusion uses self.output_activation instead",
+        "ralph_verify.py passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Replaced the hard clamp at the end of _sample_diffusion with self.output_activation(current) so JV policies still use tanh bounding while JP policies avoid lossy denoising truncation."
+    }
+  ]
+}
