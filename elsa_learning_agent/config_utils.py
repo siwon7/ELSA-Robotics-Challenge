@@ -132,6 +132,9 @@ def get_agent_model_kwargs(config) -> dict:
         "volumedp_emit_voxel_weights": bool(
             getattr(config.model, "volumedp_emit_voxel_weights", False)
         ),
+        "volumedp_disable_spatial_tokens": bool(
+            getattr(config.model, "volumedp_disable_spatial_tokens", False)
+        ),
         "proprio_visual_fusion_mode": str(
             getattr(config.model, "proprio_visual_fusion_mode", "token") or "token"
         ),
@@ -149,5 +152,11 @@ def get_agent_model_kwargs(config) -> dict:
         ),
         "gripper_loss_weight": float(
             getattr(config.model, "gripper_loss_weight", 1.0) or 1.0
+        ),
+        "ee_aux_loss_weight": float(
+            getattr(config.model, "ee_aux_loss_weight", 0.0) or 0.0
+        ),
+        "ee_aux_sigma": float(
+            getattr(config.model, "ee_aux_sigma", 0.05) or 0.05
         ),
     }

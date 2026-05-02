@@ -90,6 +90,9 @@ def train_one_epoch(
         low_dim_state = batch["low_dim_state"].to(device)
         action = batch["action"].to(device)
         obs_context = move_nested_to_device(batch.get("obs_context"), device)
+        ee_position = batch.get("ee_position")
+        if ee_position is not None:
+            ee_position = ee_position.to(device)
 
         optimizer.zero_grad()
         loss = agent.compute_loss(
@@ -98,6 +101,7 @@ def train_one_epoch(
             action,
             criterion=criterion,
             obs_context=obs_context,
+            ee_position=ee_position,
         )
 
         total_objective = loss

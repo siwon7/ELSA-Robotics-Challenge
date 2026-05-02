@@ -73,12 +73,15 @@ class Agent():
         volumedp_use_softmax_tokens=False,
         volumedp_goal_token_dim=0,
         volumedp_emit_voxel_weights=False,
+        volumedp_disable_spatial_tokens=False,
         proprio_visual_fusion_mode="token",
         proprio_visual_fusion_hidden_dim=256,
         proprio_visual_fusion_scale=1.0,
         separate_gripper_head=False,
         gripper_head_hidden_dim=128,
         gripper_loss_weight=1.0,
+        ee_aux_loss_weight=0.0,
+        ee_aux_sigma=0.05,
     ):
         # YOUR CODE HERE
         # Define the architecture of your neural network here
@@ -115,12 +118,15 @@ class Agent():
         volumedp_use_softmax_tokens=volumedp_use_softmax_tokens,
         volumedp_goal_token_dim=volumedp_goal_token_dim,
         volumedp_emit_voxel_weights=volumedp_emit_voxel_weights,
+        volumedp_disable_spatial_tokens=volumedp_disable_spatial_tokens,
         proprio_visual_fusion_mode=proprio_visual_fusion_mode,
         proprio_visual_fusion_hidden_dim=proprio_visual_fusion_hidden_dim,
         proprio_visual_fusion_scale=proprio_visual_fusion_scale,
         separate_gripper_head=separate_gripper_head,
         gripper_head_hidden_dim=gripper_head_hidden_dim,
         gripper_loss_weight=gripper_loss_weight,
+        ee_aux_loss_weight=ee_aux_loss_weight,
+        ee_aux_sigma=ee_aux_sigma,
         )
 
     def train(self, ):
@@ -133,13 +139,14 @@ class Agent():
         # Get the action from the policy
         return self.policy(image, low_dim_state, obs_context=obs_context) # Assuming the policy is a function
 
-    def compute_loss(self, image, low_dim_state, action, criterion=None, obs_context=None):
+    def compute_loss(self, image, low_dim_state, action, criterion=None, obs_context=None, ee_position=None):
         return self.policy.compute_loss(
             image,
             low_dim_state,
             action,
             criterion=criterion,
             obs_context=obs_context,
+            ee_position=ee_position,
         )
     
     def load_state_dict(self, state_dict,device=None):
@@ -933,6 +940,7 @@ class VolumeDPFullDinoDepthEncoder(nn.Module):
         num_spatial_tokens=64,
         goal_token_dim=0,
         emit_voxel_weights=False,
+        disable_spatial_tokens=False,
         depth_feature_dim=32,
     ):
         super().__init__()
@@ -965,6 +973,7 @@ class VolumeDPFullDinoDepthEncoder(nn.Module):
         self.num_spatial_tokens = int(num_spatial_tokens)
         self.goal_token_dim = int(max(0, goal_token_dim))
         self.emit_voxel_weights = bool(emit_voxel_weights)
+        self.disable_spatial_tokens = bool(disable_spatial_tokens)
         self.depth_feature_dim = int(max(1, depth_feature_dim))
 
         self.depth_image_processor = AutoImageProcessor.from_pretrained(depth_model_id)
@@ -1086,6 +1095,13 @@ class VolumeDPFullDinoDepthEncoder(nn.Module):
         else:
             with torch.no_grad():
                 cls_token, _, dino_feature_map = _extract_vit_tokens(self.dino_backbone, x_norm)
+
+        if self.disable_spatial_tokens:
+            global_embedding = self.global_projector(cls_token)
+            return {
+                "global_embedding": global_embedding,
+                "spatial_tokens": None,
+            }
 
         depth_map = self._depth_predicted(x)
 
@@ -1309,12 +1325,15 @@ class BCPolicy(nn.Module):
         volumedp_use_softmax_tokens=False,
         volumedp_goal_token_dim=0,
         volumedp_emit_voxel_weights=False,
+        volumedp_disable_spatial_tokens=False,
         proprio_visual_fusion_mode="token",
         proprio_visual_fusion_hidden_dim=256,
         proprio_visual_fusion_scale=1.0,
         separate_gripper_head=False,
         gripper_head_hidden_dim=128,
         gripper_loss_weight=1.0,
+        ee_aux_loss_weight=0.0,
+        ee_aux_sigma=0.05,
     ):
         super(BCPolicy, self).__init__()
         self.vision_backbone = vision_backbone
@@ -1352,6 +1371,8 @@ class BCPolicy(nn.Module):
         self.separate_gripper_head = bool(separate_gripper_head)
         self.gripper_head_hidden_dim = int(gripper_head_hidden_dim)
         self.gripper_loss_weight = float(gripper_loss_weight)
+        self.ee_aux_loss_weight = float(ee_aux_loss_weight)
+        self.ee_aux_sigma = float(ee_aux_sigma)
         valid_proprio_visual_fusion_modes = {
             "none",
             "token",
@@ -1474,6 +1495,7 @@ class BCPolicy(nn.Module):
                 num_spatial_tokens=volumedp_num_spatial_tokens,
                 goal_token_dim=self.volumedp_goal_token_dim,
                 emit_voxel_weights=self.volumedp_emit_voxel_weights,
+                disable_spatial_tokens=bool(volumedp_disable_spatial_tokens),
             )
         else:
             raise ValueError(
@@ -1627,9 +1649,11 @@ class BCPolicy(nn.Module):
     def _encode_context(self, image, low_dim_state, obs_context=None):
         encoder_output = self.cnn_encoder(image, obs_context) if self.vision_backbone.startswith("volumedp_") else self.cnn_encoder(image)
         spatial_tokens = None
+        voxel_weights = None
         if isinstance(encoder_output, dict):
             img_embedding = encoder_output["global_embedding"]
             spatial_tokens = encoder_output.get("spatial_tokens")
+            voxel_weights = encoder_output.get("voxel_weights")
         else:
             img_embedding = encoder_output
         state_embedding = self.mlp_encoder(low_dim_state)
@@ -1679,7 +1703,7 @@ class BCPolicy(nn.Module):
             gamma, beta = self.adaln_context(adaln_condition).chunk(2, dim=-1)
             hidden = F.layer_norm(hidden, hidden.shape[-1:])
             hidden = hidden * (1.0 + gamma) + beta
-        return F.relu(hidden), spatial_tokens
+        return F.relu(hidden), spatial_tokens, voxel_weights
 
     def _forward_mlp(self, context):
         hidden = self.policy_fc2(context)
@@ -1732,8 +1756,18 @@ class BCPolicy(nn.Module):
             return None
         return self.gripper_head(context)
 
-    def compute_loss(self, image, low_dim_state, target_action, criterion=None, obs_context=None):
-        context, spatial_tokens = self._encode_context(image, low_dim_state, obs_context=obs_context)
+    def compute_loss(
+        self,
+        image,
+        low_dim_state,
+        target_action,
+        criterion=None,
+        obs_context=None,
+        ee_position=None,
+    ):
+        context, spatial_tokens, voxel_weights = self._encode_context(
+            image, low_dim_state, obs_context=obs_context
+        )
         if self.policy_head_type == "mlp":
             predicted = self._forward_mlp(context)
             if criterion is None:
@@ -1767,10 +1801,25 @@ class BCPolicy(nn.Module):
                 gripper_target_binary,
             )
             loss = loss + self.gripper_loss_weight * gripper_loss
+        if (
+            self.ee_aux_loss_weight > 0.0
+            and voxel_weights is not None
+            and ee_position is not None
+            and hasattr(self.cnn_encoder, "voxel_centers")
+        ):
+            voxel_centers = self.cnn_encoder.voxel_centers.to(voxel_weights.device)
+            ee_pos = ee_position.to(voxel_weights.device).float()
+            diffs = voxel_centers.unsqueeze(0) - ee_pos.unsqueeze(1)
+            sq = (diffs * diffs).sum(dim=-1)
+            sigma = max(self.ee_aux_sigma, 1e-3)
+            target_mask = torch.exp(-sq / (2.0 * sigma * sigma))
+            voxel_attention = voxel_weights.sum(dim=-1).clamp(0.0, 1.0)
+            ee_loss = F.binary_cross_entropy(voxel_attention, target_mask)
+            loss = loss + self.ee_aux_loss_weight * ee_loss
         return loss
 
     def forward(self, image, low_dim_state, obs_context=None):
-        context, spatial_tokens = self._encode_context(
+        context, spatial_tokens, _ = self._encode_context(
             image,
             low_dim_state,
             obs_context=obs_context,

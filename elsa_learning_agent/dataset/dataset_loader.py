@@ -12,6 +12,7 @@ from elsa_learning_agent.utils import (
     get_image_transform,
     get_action_representation,
     requires_observation_context,
+    requires_ee_position,
 )
 from elsa_learning_agent.dataset.compat import load_pickled_data
 from elsa_learning_agent.dataset.keypoint_discovery import (
@@ -58,6 +59,14 @@ class ImitationDataset(Dataset):
 
         self.transform = get_image_transform(config)
         self._include_obs_context = requires_observation_context(config)
+        # Camera-aware baseline: append flattened K (9) + T (16) to low_dim_state.
+        # Total state size becomes 8 (proprio) + 25 = 33 when enabled.
+        self._include_camera_in_state = bool(
+            getattr(config.dataset, "include_camera_in_state", False)
+        )
+        # When EE-mask aux supervision is enabled, also load obs.gripper_pose[:3]
+        # (the 3-D end-effector position) as 'ee_position' for each datapoint.
+        self._include_ee_position = requires_ee_position(config)
         self.data = []
         self.demos_idx = []
 
@@ -158,6 +167,25 @@ class ImitationDataset(Dataset):
         else:
             front_image, low_dim_state = process_obs(obs, self.transform)
             obs_context = None
+        if self._include_camera_in_state:
+            misc = getattr(obs, "misc", {}) or {}
+            K = misc.get("front_camera_intrinsics")
+            T = misc.get("front_camera_extrinsics")
+            if K is None or T is None:
+                raise ValueError(
+                    "include_camera_in_state=True but obs.misc lacks "
+                    "front_camera_intrinsics or front_camera_extrinsics"
+                )
+            cam_state = torch.tensor(
+                np.concatenate(
+                    [
+                        np.asarray(K, dtype=np.float32).reshape(-1),
+                        np.asarray(T, dtype=np.float32).reshape(-1),
+                    ]
+                ),
+                dtype=torch.float32,
+            )
+            low_dim_state = torch.cat([low_dim_state, cam_state], dim=0)
         action_seq = [
             self._build_single_action(
                 trajectory,
@@ -184,6 +212,14 @@ class ImitationDataset(Dataset):
         }
         if obs_context is not None:
             datapoint["obs_context"] = obs_context
+        if self._include_ee_position:
+            gripper_pose = getattr(obs, "gripper_pose", None)
+            if gripper_pose is None:
+                raise ValueError(
+                    "ee_aux_loss_weight > 0 but obs.gripper_pose is missing on this RLBench observation."
+                )
+            ee_xyz = np.asarray(gripper_pose, dtype=np.float32).reshape(-1)[:3]
+            datapoint["ee_position"] = torch.tensor(ee_xyz, dtype=torch.float32)
         return datapoint
 
     def __len__(self):

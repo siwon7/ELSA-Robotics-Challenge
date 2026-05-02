@@ -56,7 +56,12 @@ def _get_rlbench_eval_classes():
     from colosseum.rlbench.extensions.environment import EnvironmentExt
     from colosseum.rlbench.utils import ObservationConfigExt, name_to_class
     from rlbench.action_modes.action_mode import ActionMode
-    from rlbench.action_modes.arm_action_modes import JointPosition, JointVelocity
+    from rlbench.action_modes.arm_action_modes import (
+        JointPosition,
+        JointVelocity,
+        EndEffectorPoseViaIK,
+        EndEffectorPoseViaPlanning,
+    )
     from rlbench.action_modes.gripper_action_modes import Discrete
 
     class MoveArmThenGripperEval(ActionMode):
@@ -97,6 +102,8 @@ def _get_rlbench_eval_classes():
         "TASKS_TTM_FOLDER": TASKS_TTM_FOLDER,
         "JointPosition": JointPosition,
         "JointVelocity": JointVelocity,
+        "EndEffectorPoseViaIK": EndEffectorPoseViaIK,
+        "EndEffectorPoseViaPlanning": EndEffectorPoseViaPlanning,
         "Discrete": Discrete,
         "MoveArmThenGripperEval": MoveArmThenGripperEval,
         "MoveArmThenGripperJointPositionEval": MoveArmThenGripperJointPositionEval,
@@ -277,6 +284,15 @@ def requires_observation_context(config) -> bool:
         "volumedp_full_dinov3_depth",
     }
 
+
+def requires_ee_position(config) -> bool:
+    """True when EE-mask auxiliary supervision is enabled (loads obs.gripper_pose)."""
+    model_cfg = getattr(config, "model", None)
+    if model_cfg is None:
+        return False
+    weight = getattr(model_cfg, "ee_aux_loss_weight", 0.0) or 0.0
+    return float(weight) > 0.0
+
 def extract_obs_context(obs):
     misc = getattr(obs, "misc", {}) or {}
     context = {}
@@ -326,6 +342,25 @@ def process_obs(obs, transform=None):
 
     # process observations for agent
     low_dim_state = torch.tensor(np.concatenate((obs.joint_positions, np.array([obs.gripper_open]))), dtype=torch.float32)
+
+    # Camera-aware baseline: append flattened K (9) + T (16) when requested
+    # via env var. Must mirror dataset_loader's include_camera_in_state path so
+    # that train-time and eval-time low_dim_state dims agree.
+    if os.getenv("ELSA_INCLUDE_CAMERA_IN_STATE", "0") == "1":
+        misc = getattr(obs, "misc", {}) or {}
+        K = misc.get("front_camera_intrinsics")
+        T = misc.get("front_camera_extrinsics")
+        if K is not None and T is not None:
+            cam = torch.tensor(
+                np.concatenate(
+                    [
+                        np.asarray(K, dtype=np.float32).reshape(-1),
+                        np.asarray(T, dtype=np.float32).reshape(-1),
+                    ]
+                ),
+                dtype=torch.float32,
+            )
+            low_dim_state = torch.cat([low_dim_state, cam], dim=0)
 
     return front_image, low_dim_state
 
@@ -476,6 +511,8 @@ def load_environment(base_cfg, collection_cfg, idx_environment, headless=True):
     TASKS_TTM_FOLDER = rlbench_cls["TASKS_TTM_FOLDER"]
     JointPosition = rlbench_cls["JointPosition"]
     JointVelocity = rlbench_cls["JointVelocity"]
+    EndEffectorPoseViaIK = rlbench_cls["EndEffectorPoseViaIK"]
+    EndEffectorPoseViaPlanning = rlbench_cls["EndEffectorPoseViaPlanning"]
     Discrete = rlbench_cls["Discrete"]
     MoveArmThenGripperEval = rlbench_cls["MoveArmThenGripperEval"]
     MoveArmThenGripperJointPositionEval = rlbench_cls["MoveArmThenGripperJointPositionEval"]
@@ -521,9 +558,31 @@ def load_environment(base_cfg, collection_cfg, idx_environment, headless=True):
             arm_action_mode=JointPosition(absolute_mode=True),
             gripper_action_mode=Discrete(),
         )
+    elif execution_interface == "joint_position_relative":
+        action_mode = MoveArmThenGripperJointPositionEval(
+            arm_action_mode=JointPosition(absolute_mode=False),
+            gripper_action_mode=Discrete(),
+        )
     elif execution_interface == "joint_velocity":
         action_mode = MoveArmThenGripperEval(
             arm_action_mode=JointVelocity(),
+            gripper_action_mode=Discrete(),
+        )
+    elif execution_interface.startswith("ee_pose_"):
+        # ee_pose_{ik|plan}_{abs|rel}_{world|ee}[_collision]
+        parts = execution_interface.split("_")
+        # ['ee', 'pose', '{ik|plan}', '{abs|rel}', '{world|ee}', maybe 'collision']
+        backend = parts[2]  # ik or plan
+        absolute_mode = parts[3] == "abs"
+        frame = "world" if parts[4] == "world" else "end effector"
+        collision = (len(parts) > 5 and parts[5] == "collision")
+        cls = EndEffectorPoseViaIK if backend == "ik" else EndEffectorPoseViaPlanning
+        action_mode = MoveArmThenGripperEval(
+            arm_action_mode=cls(
+                absolute_mode=absolute_mode,
+                frame=frame,
+                collision_checking=collision,
+            ),
             gripper_action_mode=Discrete(),
         )
     else:
