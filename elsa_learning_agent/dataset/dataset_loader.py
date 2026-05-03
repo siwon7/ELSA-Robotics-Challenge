@@ -13,6 +13,7 @@ from elsa_learning_agent.utils import (
     get_action_representation,
     requires_observation_context,
     requires_ee_position,
+    uses_temporal_rgb_pair,
 )
 from elsa_learning_agent.dataset.compat import load_pickled_data
 from elsa_learning_agent.dataset.keypoint_discovery import (
@@ -64,6 +65,7 @@ class ImitationDataset(Dataset):
         self._include_camera_in_state = bool(
             getattr(config.dataset, "include_camera_in_state", False)
         )
+        self._use_temporal_rgb_pair = uses_temporal_rgb_pair(config)
         # When EE-mask aux supervision is enabled, also load obs.gripper_pose[:3]
         # (the 3-D end-effector position) as 'ee_position' for each datapoint.
         self._include_ee_position = requires_ee_position(config)
@@ -159,13 +161,21 @@ class ImitationDataset(Dataset):
 
     def _load_datapoint(self, trajectory, time_step, keypoints=None):
         obs = trajectory[time_step]
+        prev_obs = trajectory[max(0, time_step - 1)] if self._use_temporal_rgb_pair else None
         if self._include_obs_context:
             front_image, low_dim_state, obs_context = process_obs_with_context(
                 obs,
                 self.transform,
+                prev_obs=prev_obs,
+                temporal_rgb_pair=self._use_temporal_rgb_pair,
             )
         else:
-            front_image, low_dim_state = process_obs(obs, self.transform)
+            front_image, low_dim_state = process_obs(
+                obs,
+                self.transform,
+                prev_obs=prev_obs,
+                temporal_rgb_pair=self._use_temporal_rgb_pair,
+            )
             obs_context = None
         if self._include_camera_in_state:
             misc = getattr(obs, "misc", {}) or {}

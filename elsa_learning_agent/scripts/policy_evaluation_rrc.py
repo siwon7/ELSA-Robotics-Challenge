@@ -101,9 +101,10 @@ def main(model_paths, model_config_path, predictions_path) -> int:
                 shuffle=False,
                 num_workers=int(getattr(model_cfg.dataset, "num_workers", 0) or 0),
             )
+            sample = next(iter(dataloader))
 
             agent = Agent(
-                image_channels=3,
+                image_channels=int(sample["image"].shape[1]),
                 low_dim_state_dim=8,
                 action_dim=int(infer_action_dim(model_cfg)),
                 image_size=(128,128),

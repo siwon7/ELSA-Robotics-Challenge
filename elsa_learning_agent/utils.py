@@ -276,6 +276,15 @@ def get_image_transform(config_file):
     
     return transform
 
+
+def uses_temporal_rgb_pair(config) -> bool:
+    dataset_cfg = getattr(config, "dataset", None)
+    return bool(getattr(dataset_cfg, "temporal_rgb_pair", False))
+
+
+def get_expected_image_channels(config) -> int:
+    return 6 if uses_temporal_rgb_pair(config) else 3
+
 def requires_observation_context(config) -> bool:
     model_cfg = getattr(config, "model", None)
     vision_backbone = str(getattr(model_cfg, "vision_backbone", "cnn") or "cnn")
@@ -335,10 +344,21 @@ def extract_obs_context(obs):
 
     return context
 
-def process_obs(obs, transform=None):
-    # invert axis from rgb to bgr
-    front_image = torch.tensor(obs.front_rgb, dtype=torch.float32).permute(2, 0, 1)/255
-    front_image = transform(front_image)
+def _process_single_rgb_frame(obs, transform=None):
+    frame = torch.tensor(obs.front_rgb, dtype=torch.float32).permute(2, 0, 1) / 255
+    if transform is not None:
+        frame = transform(frame)
+    return frame
+
+
+def process_obs(obs, transform=None, prev_obs=None, temporal_rgb_pair: bool = False):
+    current_frame = _process_single_rgb_frame(obs, transform)
+    if temporal_rgb_pair:
+        previous_source = obs if prev_obs is None else prev_obs
+        previous_frame = _process_single_rgb_frame(previous_source, transform)
+        front_image = torch.cat((current_frame, previous_frame), dim=0)
+    else:
+        front_image = current_frame
 
     # process observations for agent
     low_dim_state = torch.tensor(np.concatenate((obs.joint_positions, np.array([obs.gripper_open]))), dtype=torch.float32)
@@ -364,8 +384,13 @@ def process_obs(obs, transform=None):
 
     return front_image, low_dim_state
 
-def process_obs_with_context(obs, transform=None):
-    front_image, low_dim_state = process_obs(obs, transform)
+def process_obs_with_context(obs, transform=None, prev_obs=None, temporal_rgb_pair: bool = False):
+    front_image, low_dim_state = process_obs(
+        obs,
+        transform,
+        prev_obs=prev_obs,
+        temporal_rgb_pair=temporal_rgb_pair,
+    )
     return front_image, low_dim_state, extract_obs_context(obs)
 
 def move_nested_to_device(value, device):

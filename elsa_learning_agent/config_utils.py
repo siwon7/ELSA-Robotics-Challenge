@@ -129,6 +129,9 @@ def get_agent_model_kwargs(config) -> dict:
         "volumedp_goal_token_dim": int(
             getattr(config.model, "volumedp_goal_token_dim", 0) or 0
         ),
+        "volumedp_append_goal_token_to_decoder": bool(
+            getattr(config.model, "volumedp_append_goal_token_to_decoder", False)
+        ),
         "volumedp_emit_voxel_weights": bool(
             getattr(config.model, "volumedp_emit_voxel_weights", False)
         ),

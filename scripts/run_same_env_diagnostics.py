@@ -37,6 +37,7 @@ from elsa_learning_agent.utils import (
     process_obs_with_context,
     requires_observation_context,
     select_receding_horizon_actions,
+    uses_temporal_rgb_pair,
 )
 from federated_elsa_robotics.task import infer_action_dim, validate_one_epoch
 
@@ -57,7 +58,7 @@ def tensor_stats(x: torch.Tensor) -> dict:
 
 def build_agent(cfg, sample, device: torch.device) -> Agent:
     agent = Agent(
-        image_channels=3,
+        image_channels=int(sample["image"].shape[1]),
         low_dim_state_dim=int(sample["low_dim_state"].shape[1]),
         action_dim=int(sample["action"].shape[1]),
         image_size=(int(sample["image"].shape[2]), int(sample["image"].shape[3])),
@@ -149,18 +150,30 @@ def collect_initial_actions(
     episodes: int,
 ) -> dict:
     actions = []
+    temporal_rgb_pair = uses_temporal_rgb_pair(cfg)
     with torch.no_grad():
         for episode_idx in range(episodes):
             _descriptions, obs = task_env.reset()
+            prev_policy_obs = None
             if requires_observation_context(cfg):
-                front_rgb, low_dim_state, obs_context = process_obs_with_context(obs, transform)
+                front_rgb, low_dim_state, obs_context = process_obs_with_context(
+                    obs,
+                    transform,
+                    prev_obs=prev_policy_obs,
+                    temporal_rgb_pair=temporal_rgb_pair,
+                )
                 obs_context = {
                     key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
                     for key, value in obs_context.items()
                 }
                 obs_context = move_nested_to_device(obs_context, device)
             else:
-                front_rgb, low_dim_state = process_obs(obs, transform)
+                front_rgb, low_dim_state = process_obs(
+                    obs,
+                    transform,
+                    prev_obs=prev_policy_obs,
+                    temporal_rgb_pair=temporal_rgb_pair,
+                )
                 obs_context = None
             front_rgb = front_rgb.unsqueeze(0).to(device)
             low_dim_state = low_dim_state.unsqueeze(0).to(device)

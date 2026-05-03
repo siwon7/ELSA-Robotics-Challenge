@@ -18,12 +18,14 @@ from elsa_learning_agent.agent import Agent
 from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.utils import (
     denormalize_action,
+    get_expected_image_channels,
     get_image_transform,
     load_environment,
     move_nested_to_device,
     process_obs,
     process_obs_with_context,
     requires_observation_context,
+    uses_temporal_rgb_pair,
 )
 from scripts.live_eval_common import load_main_split_cfg
 
@@ -93,7 +95,7 @@ def load_joint_position_environment(base_cfg, collection_cfg, idx_environment: i
 
 def load_agent(model_path: str, device: str, cfg):
     agent = Agent(
-        image_channels=3,
+        image_channels=get_expected_image_channels(cfg),
         low_dim_state_dim=8,
         action_dim=8,
         image_size=(128, 128),
@@ -111,16 +113,29 @@ def run_eval_episode(agent, task_env, transform, device: str, mode: str, dt: flo
     reward = 0.0
     terminated = False
     steps = 0
+    prev_policy_obs = None
+    temporal_rgb_pair = uses_temporal_rgb_pair(cfg)
     while not terminated and steps < max_steps:
+        current_obs = obs
         if requires_observation_context(cfg):
-            front_rgb, low_dim_state, obs_context = process_obs_with_context(obs, transform)
+            front_rgb, low_dim_state, obs_context = process_obs_with_context(
+                obs,
+                transform,
+                prev_obs=prev_policy_obs,
+                temporal_rgb_pair=temporal_rgb_pair,
+            )
             obs_context = {
                 key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
                 for key, value in obs_context.items()
             }
             obs_context = move_nested_to_device(obs_context, device)
         else:
-            front_rgb, low_dim_state = process_obs(obs, transform)
+            front_rgb, low_dim_state = process_obs(
+                obs,
+                transform,
+                prev_obs=prev_policy_obs,
+                temporal_rgb_pair=temporal_rgb_pair,
+            )
             obs_context = None
         front_rgb = front_rgb.unsqueeze(0).to(device)
         low_dim_state = low_dim_state.unsqueeze(0).to(device)
@@ -145,6 +160,7 @@ def run_eval_episode(agent, task_env, transform, device: str, mode: str, dt: flo
         reward = float(step_reward)
         terminated = bool(terminate)
         steps += 1
+        prev_policy_obs = current_obs
     return {
         "reward": reward,
         "terminated": terminated,

@@ -22,6 +22,7 @@ from elsa_learning_agent.utils import (
     process_obs_with_context,
     requires_observation_context,
     select_receding_horizon_actions,
+    uses_temporal_rgb_pair,
 )
 
 
@@ -57,19 +58,32 @@ def rollout_episode(
     reward = 0.0
     terminated = False
     steps = 0
+    prev_policy_obs = None
     needs_obs_context = requires_observation_context(cfg) or str(
         getattr(getattr(agent, "policy", None), "vision_backbone", "") or ""
-    ) == "volumedp_lite_dinov3_vits16"
+    ).startswith("volumedp_")
+    temporal_rgb_pair = uses_temporal_rgb_pair(cfg)
 
     while not terminated and steps < max_steps:
+        current_obs = obs
         if needs_obs_context:
-            front_rgb, low_dim_state, obs_context = process_obs_with_context(obs, transform)
+            front_rgb, low_dim_state, obs_context = process_obs_with_context(
+                obs,
+                transform,
+                prev_obs=prev_policy_obs,
+                temporal_rgb_pair=temporal_rgb_pair,
+            )
             obs_context = {
                 key: value.unsqueeze(0) if torch.is_tensor(value) and value.ndim >= 1 else value
                 for key, value in obs_context.items()
             }
         else:
-            front_rgb, low_dim_state = process_obs(obs, transform)
+            front_rgb, low_dim_state = process_obs(
+                obs,
+                transform,
+                prev_obs=prev_policy_obs,
+                temporal_rgb_pair=temporal_rgb_pair,
+            )
             obs_context = None
         front_rgb = front_rgb.unsqueeze(0).to(device)
         low_dim_state = low_dim_state.unsqueeze(0).to(device)
@@ -100,6 +114,7 @@ def rollout_episode(
             steps += int(executed_steps)
             if terminated or steps >= max_steps:
                 break
+        prev_policy_obs = current_obs
 
     success = bool(terminated or reward > 0.0)
     return {

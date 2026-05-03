@@ -157,7 +157,7 @@ def client_fn(context: Context):
         )
         action_dim = sample_action_dim
     agent = Agent(
-            image_channels=3,
+            image_channels=int(sample["image"].shape[1]),
             low_dim_state_dim=sample["low_dim_state"].shape[1],
             action_dim=action_dim,
             image_size=(sample["image"].shape[2], sample["image"].shape[3]),

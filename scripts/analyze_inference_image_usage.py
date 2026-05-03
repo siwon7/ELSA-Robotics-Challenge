@@ -66,7 +66,7 @@ def main():
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     agent = Agent(
-        image_channels=3,
+        image_channels=int(sample["image"].shape[1]),
         low_dim_state_dim=sample["low_dim_state"].shape[1],
         action_dim=sample["action"].shape[1],
         image_size=(sample["image"].shape[2], sample["image"].shape[3]),

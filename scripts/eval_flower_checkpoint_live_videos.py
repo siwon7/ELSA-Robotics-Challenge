@@ -19,6 +19,7 @@ from elsa_learning_agent.live_rollout import (
     save_gif,
 )
 from elsa_learning_agent.utils import (
+    get_expected_image_channels,
     get_action_pipeline_preset,
     get_action_representation,
     get_execution_action_adapter,
@@ -92,7 +93,7 @@ def main():
     base_cfg.transform = cfg.transform
 
     agent = Agent(
-        image_channels=3,
+        image_channels=get_expected_image_channels(cfg),
         low_dim_state_dim=8,
         action_dim=int(infer_action_dim(cfg)),
         image_size=(128, 128),

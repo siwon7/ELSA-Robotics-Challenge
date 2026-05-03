@@ -71,6 +71,9 @@ def validate_runtime_config(config) -> dict:
     volumedp_action_token_dim = int(
         getattr(config.model, "volumedp_action_token_dim", 8) or 8
     )
+    volumedp_append_goal_token_to_decoder = bool(
+        getattr(config.model, "volumedp_append_goal_token_to_decoder", False)
+    )
     proprio_visual_fusion_mode = str(
         getattr(config.model, "proprio_visual_fusion_mode", "token") or "token"
     )
@@ -229,6 +232,7 @@ def validate_runtime_config(config) -> dict:
         "volumedp_decoder_layers": volumedp_decoder_layers,
         "volumedp_decoder_heads": volumedp_decoder_heads,
         "volumedp_action_token_dim": volumedp_action_token_dim,
+        "volumedp_append_goal_token_to_decoder": volumedp_append_goal_token_to_decoder,
         "proprio_visual_fusion_mode": proprio_visual_fusion_mode,
         "proprio_visual_fusion_hidden_dim": proprio_visual_fusion_hidden_dim,
         "proprio_visual_fusion_scale": proprio_visual_fusion_scale,

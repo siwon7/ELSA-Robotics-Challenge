@@ -61,8 +61,9 @@ aggregation, FedAvg or otherwise, unstable. We propose a recipe
 that addresses each axis with a different mechanism.
 \emph{(i)} A frozen DINOv3 + Depth-Anything backbone with
 client-side LoRA, lifted into a small client-local voxel volume
-using each client's known $K_c$ and $T_c$ (a VolumeDP-lite
-encoder), addresses the task axis by exposing metric depth.
+using each client's known $K_c$ and $T_c$ (a paper-close
+VolumeDP-style encoder), addresses the task axis by exposing
+metric depth.
 \emph{(ii)} The same volumetric lift, applied \emph{before} any
 parameter is communicated, addresses the federated axis by
 realigning client observations into a shared world-frame
@@ -405,17 +406,33 @@ that does not appear in standard full-finetune FL.
 \paragraph{Architecture.}
 Each client uses its own $K_c$ (read from the camera SDK,
 \S\ref{sec:fl-camera}) and base extrinsic $T_c$ (one-time
-workspace calibration) to (a)~unproject the Depth-Anything depth
-map into a partial camera-frame point cloud, (b)~transform it into
-a world-aligned predefined voxel grid ($32^3$, centred on the
-robot's workspace, frustum-cropped), and (c)~deformably project
-DINOv3 patch features into the grid through a lightweight
-cross-attention layer. Per-pixel Pl\"ucker rays computed from
-$K_c$ are concatenated as a side channel before the projection
-(CamP-style camera preconditioning \cite{camp2023}). The result
-is a small set of voxel tokens in a world-aligned frame, which is
-then top-$k\!=\!64$ pooled into a spatial-token set
-\`a la VolumeDP \cite{volumedp2026}.
+workspace calibration) to build a paper-close approximation to
+VolumeDP \cite{volumedp2026}. Concretely, the client forms a
+two-frame RGB pair $(t,t\!-\!1)$, encodes each frame with frozen
+DINOv3 patch features and a frozen Depth-Anything depth prior,
+projects those features into a predefined world-aligned voxel grid
+using $(K_c, T_c)$, averages the per-frame voxel features, and
+adds voxel-centre positional encodings. A goal-conditioned softmax
+token learner over voxels then produces a set of spatial tokens;
+to better match Fig.~2 of VolumeDP, we append a learned proxy
+goal token to the decoder token set and supervise voxel weights
+with an end-effector-centred auxiliary BCE mask.
+
+\paragraph{VolumeDP fidelity note.}
+This should be described as a \emph{paper-close approximation},
+not as an exact reproduction of VolumeDP. Relative to Fig.~2, the
+current implementation matches the world-frame voxel
+representation, temporal two-frame input, spatial-token decoder
+interface, and end-effector-centred auxiliary supervision.
+However, it still differs from the paper in four material ways:
+we keep feature sampling instead of deformable volume--image
+cross-attention, use a learned proxy goal token rather than a real
+language instruction token, omit gripper-transition auxiliary
+supervision, and run a smaller configuration ($24^3$ grid, 200
+tokens, 192-d token width) than the paper's full $40^3$/512-d
+setting. We make this distinction explicit because the negative
+same-env probes below should not be over-interpreted as a negative
+result against the full VolumeDP design.
 
 \paragraph{Task-level rationale.}
 Explicit world-frame voxel features make depth-and-position
@@ -471,14 +488,19 @@ of metadata per client.
 
 \subsection{Action Head and Policy Decoder}
 \label{sec:action-head}
-Both ideas feed into the same decoder: a 20-step DDPM denoising
-MLP \cite{diffpolicy} conditioned on the spatial-token set
-(if Idea~B is used) or the pooled image embedding (Idea~A only),
-predicting a chunk-4 / exec-2 action sequence. A separate
-sigmoid+BCE gripper head handles the binary gripper event.
-Action label: JP-servo $g\!=\!20$ from the diagnostic of
-\S\ref{sec:diagnostic}. The 8-DoF proprioceptive state is fused
-into the global token via gated FiLM.
+Both ideas feed into diffusion decoders \cite{diffpolicy}, but we
+do \emph{not} force the same conditioning layout for every probe.
+For the strongest 2-D baseline of Tab.~\ref{tab:slide-ablation},
+we use a compact 20-step DDPM conditioned on a pooled image
+embedding with gated-FiLM proprio fusion. For the paper-close
+VolumeDP runs, we instead use a 100-step DDPM conditioned on the
+spatial-token set, an appended proxy goal token, and a separate
+proprio token, which is closer to Fig.~2 of VolumeDP. A separate
+sigmoid+BCE gripper head handles the binary gripper event. For the
+FL-facing comparisons we keep JP-servo $g\!=\!20$ from the
+diagnostic of \S\ref{sec:diagnostic}; the slide same-env
+paper-close sanity run is kept on the strongest currently stable
+JV-direct setup so that the representation change is isolated.
 
 \subsection{Server--Client Split}
 \label{sec:split}
@@ -503,8 +525,8 @@ into the global token via gated FiLM.
 \node[frozen,below=2pt of cam] (da)  {Depth-Anything \;\emph{frozen, local}};
 \node[frozen,below=2pt of da]  (din) {DINOv3 ViT-S/16 \;\emph{frozen}};
 \node[trainable,below=2pt of din] (lor) {DINO-LoRA $r\!\in\!\{4,8\}$};
-\node[trainable,below=2pt of lor] (vol) {VolumeDP-lite (voxel + cross-attn + top-$k$)};
-\node[trainable,below=2pt of vol] (dif) {Diffusion decoder (chunk4/exec2)};
+\node[trainable,below=2pt of lor] (vol) {Paper-close VolumeDP (voxel lift + soft token learner)};
+\node[trainable,below=2pt of vol] (dif) {Diffusion decoder};
 \node[action,below=2pt of dif]    (act) {JP-servo $g\!=\!20$ $\Rightarrow$ robot};
 \foreach \src/\dst in {cam/da, da/din, din/lor, lor/vol, vol/dif, dif/act}
   \draw[arr,gray] (\src) -- (\dst);
@@ -514,7 +536,7 @@ into the global token via gated FiLM.
 \caption{Lightweight federated architecture. Frozen DINOv3,
 Depth-Anything, the camera parameters $(K_c, T_c)$, and the
 client-local voxel volume never leave the client. Only the LoRA
-adapters, the VolumeDP cross-attention, and the diffusion decoder
+adapters, the voxel-lift / spatial-token module, and the diffusion decoder
 ($\sim$10\% of total parameters) are aggregated by the server.}
 \label{fig:arch}
 \end{figure}
@@ -527,8 +549,8 @@ per-client voxel volume; optionally the diffusion action head
 
 \paragraph{Server-aggregated ($\sim$10\% of params).}
 DINOv3 LoRA matrices, the camera-ray and depth-fusion projector
-MLPs, the VolumeDP-lite cross-attention and top-$k$ pooling
-weights, and (in the standard variant) the diffusion decoder.
+MLPs, the voxel-fusion and spatial-token learner weights, and (in
+the standard variant) the diffusion decoder.
 
 \subsection{Aggregation Scope: Four Variants}
 \label{sec:agg}
@@ -536,12 +558,12 @@ A federated method is fully specified only when one decides
 \emph{which} of the trainable modules are shared. With the two
 ideas separated, the aggregation surface decomposes naturally:
 \{LoRA + fusion projector\} comes from Idea~A, the volumetric
-attention and top-$k$ pooling come from Idea~B, and the diffusion
-decoder is shared by both. We compare four variants that
+token-learning block comes from Idea~B, and the diffusion decoder
+is shared by both. We compare four variants that
 correspond to different combinations of \emph{what stays local}.
 
 \noindent\textbf{V1 Global lightweight (baseline).} Aggregate
-\{LoRA, fusion projector, volumetric attention, top-$k$ pooling,
+\{LoRA, fusion projector, voxel lift, spatial-token learner,
 diffusion decoder\}. The cheapest setting in which both ideas are
 shared globally; fails when client demonstration styles are
 heterogeneous because action heads are averaged.
@@ -718,17 +740,20 @@ same probe with Idea~B's actual proposed architecture: a frozen
 DINOv3 + Depth-Anything dual stream lifted into a world-frame
 voxel grid via $(K_c, T_c)$, with a TokenLearner-style softmax over
 voxels into 48--96 spatial tokens, decoded by the same diffusion
-head as the baseline. Volume bounds and grid resolution are the
-two free parameters of the volumetric module; we sweep three
-representative settings (Tab.~\ref{tab:volumedp-sameenv}). All
-runs are 50 epochs on \texttt{env0}, 20 evaluation episodes, JV
-direct.
+head as the baseline. These were \emph{early coarse probes}, not
+yet the paper-close VolumeDP setting: they used single-frame
+input, low token budgets, a smaller grid, no decoder-side goal
+token, and no auxiliary voxel supervision. Volume bounds and grid
+resolution are the two free parameters of this early volumetric
+module; we sweep three representative settings
+(Tab.~\ref{tab:volumedp-sameenv}). All runs are 50 epochs on
+\texttt{env0}, 20 evaluation episodes, JV direct.
 
 \begin{table}[h]
 \centering
 \small
-\caption{Same-env volumetric probe (Idea~B architecture, no $(K_c,
-T_c)$ shift across demos). w1: default workspace volume
+\caption{Early same-env volumetric probe (coarse Idea~B
+approximation, no $(K_c, T_c)$ shift across demos). w1: default workspace volume
 $[-0.45, 0.45]\!\times\![-0.55, 0.55]\!\times\![0.70, 1.35]$,
 $12^3$ grid, 48 tokens. w2: same volume, $16^3$ grid, 96 tokens.
 w3: tighter near-target volume
@@ -763,6 +788,18 @@ state information; the volumetric machinery itself does
 \emph{not} carry its own weight in the absence of camera shift,
 which is exactly the load-bearing claim for the federated
 experiments in P3 (\S\ref{sec:plan}).
+
+\paragraph{Paper-close follow-up.}
+We do \emph{not} treat Tab.~\ref{tab:volumedp-sameenv} as a fair
+test of VolumeDP itself. The next run before federated evaluation
+is a paper-close same-env approximation on \emph{Slide} that adds
+(i)~temporal two-frame RGB input, (ii)~a $24^3$ voxel grid,
+(iii)~200 spatial tokens, (iv)~a 100-step diffusion decoder,
+(v)~a decoder-side proxy goal token, and (vi)~end-effector-centred
+auxiliary voxel supervision. This follow-up is designed to answer
+a narrower question: whether the early negative same-env result was
+caused by the world-frame inductive bias itself, or by an
+under-specified approximation of Fig.~2.
 
 \subsection{Evaluation Protocol Beyond Mean SR}
 \label{sec:fl-metrics}
@@ -828,6 +865,16 @@ a from-scratch CNN encoder; ``Idea~B off'' replaces voxel lifting
 with a pooled image embedding. Same-env, fixed FL setup; measures
 the \emph{task-level} contribution of each idea separately, so
 that we can credit improvements to A, B, or their interaction.
+
+\textbf{P2b Paper-close VolumeDP sanity (wk 4).} Before claiming a
+negative result for Idea~B on same-env data, re-run the single-env
+probe with a Figure-2-aligned approximation: temporal RGB pairs,
+$24^3$ voxels, 200 spatial tokens, a 100-step decoder, a
+decoder-side proxy goal token, and end-effector auxiliary
+supervision. This isolates whether the regression in
+Tab.~\ref{tab:volumedp-sameenv} came from the world-frame
+representation itself or from an under-powered approximation of
+VolumeDP.
 
 \textbf{P3 Federated-level camera-shift study (wk 5--6).}
 Re-run the $2\!\times\!2$ of P2 under three intrinsic-shift
