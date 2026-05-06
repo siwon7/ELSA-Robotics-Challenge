@@ -102,3 +102,50 @@ tmux new-session -d -s ralph_fill4_20260507 \
 주의:
 - GPU power cap은 적용하지 않았다. root 권한 없이 `nvidia-smi -pl`을 설정할 수 없기 때문이다.
 - 4GPU 동시 학습은 전원/PSU/UPS/PDU 문제를 다시 유발할 수 있다.
+
+## 2GPU fallback - 2026-05-07
+
+4GPU 재시작 후 다시 hard reset이 발생했다.
+
+- 4GPU 세션: `ralph_fill4_20260507`
+- 실행 시작: 2026-05-07 00:17 KST
+- 시스템 재부팅: 2026-05-07 00:26 KST
+- 마지막 master heartbeat: 2026-05-07 00:23:24 KST
+- 마지막 power monitor 구간에서 GPU 온도는 약 52-57C라 thermal 원인은 약하다.
+- GPU 전력 샘플은 4GPU 합산 최대 약 1036W까지 관측됐다. 5초 샘플이라 순간 피크는 더 높을 수 있다.
+
+사용자가 장기간 CoRL 작업을 병행해야 하므로, 이후에는 2개 GPU만 동시에 사용하는 conservative queue로 둔다.
+
+새 2GPU 세션:
+
+- tmux session: `ralph_fill2_20260507`
+- log root: `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill2_20260507`
+- master log: `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill2_20260507/fill3_master.log`
+- scheduler: `scripts/run_cpu_limited_fill3_queues_20260506.sh`
+- parallelism: `MAX_PARALLEL=2`
+- batch size: `BATCH_SIZE=16`
+- dataloader workers: `ELSA_DATALOADER_WORKERS=1`
+- CPU threads per job: `ELSA_CPU_THREADS_PER_JOB=1`
+
+재시작 커맨드:
+
+```bash
+tmux new-session -d -s ralph_fill2_20260507 \
+  "cd /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge && \
+   ELSA_FILL3_LOG_ROOT=/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill2_20260507 \
+   MAX_PARALLEL=2 \
+   BATCH_SIZE=16 \
+   ELSA_CPU_CORES_PER_GPU=4 \
+   ELSA_CPU_THREADS_PER_JOB=1 \
+   ELSA_DATALOADER_WORKERS=1 \
+   NUM_WORKERS=1 \
+   POLL_SEC=60 \
+   bash scripts/run_cpu_limited_fill3_queues_20260506.sh"
+```
+
+상태 확인:
+
+```bash
+tmux attach -t ralph_fill2_20260507
+tail -f /mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill2_20260507/fill3_master.log
+```
