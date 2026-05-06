@@ -149,3 +149,36 @@ tmux new-session -d -s ralph_fill2_20260507 \
 tmux attach -t ralph_fill2_20260507
 tail -f /mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill2_20260507/fill3_master.log
 ```
+
+## 4GPU retry after power outlet move - 2026-05-07
+
+2GPU fallback도 2026-05-07 03:23 KST 근처에 hard reset으로 종료됐다.
+사용자가 전원 위치를 옮긴 뒤 4GPU queue를 다시 테스트한다.
+
+새 4GPU 세션:
+
+- tmux session: `ralph_fill4_power_moved_20260507`
+- power monitor tmux session: `power_watch_20260507_moved`
+- log root: `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill4_power_moved_20260507`
+- master log: `/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill4_power_moved_20260507/fill3_master.log`
+- scheduler: `scripts/run_cpu_limited_fill3_queues_20260506.sh`
+- parallelism: `MAX_PARALLEL=4`
+- batch size: `BATCH_SIZE=16`
+- dataloader workers: `ELSA_DATALOADER_WORKERS=1`
+- CPU threads per job: `ELSA_CPU_THREADS_PER_JOB=1`
+
+재시작 커맨드:
+
+```bash
+tmux new-session -d -s ralph_fill4_power_moved_20260507 \
+  "cd /home/cvlab-dgx/siwon/ELSA-Robotics-Challenge && \
+   ELSA_FILL3_LOG_ROOT=/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/fill4_power_moved_20260507 \
+   MAX_PARALLEL=4 \
+   BATCH_SIZE=16 \
+   ELSA_CPU_CORES_PER_GPU=4 \
+   ELSA_CPU_THREADS_PER_JOB=1 \
+   ELSA_DATALOADER_WORKERS=1 \
+   NUM_WORKERS=1 \
+   POLL_SEC=60 \
+   bash scripts/run_cpu_limited_fill3_queues_20260506.sh"
+```
