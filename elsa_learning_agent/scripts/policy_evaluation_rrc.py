@@ -31,9 +31,22 @@ def _adapt_to_submission_action(predicted_action, current_low_dim_state, cfg):
 
     execution_interface = str(get_execution_action_interface(cfg))
     execution_adapter = str(get_execution_action_adapter(cfg))
+    if execution_adapter in {
+        "joint_position_relative_to_joint_position_absolute",
+        "joint_position_relative_to_joint_velocity_servo",
+    }:
+        action = torch.cat(
+            (current_low_dim_state[:7].detach().cpu() + action[:7], action[7:8]),
+            dim=0,
+        )
+
     if (
         execution_interface == "joint_velocity"
-        and execution_adapter == "joint_position_to_joint_velocity_servo"
+        and execution_adapter
+        in {
+            "joint_position_to_joint_velocity_servo",
+            "joint_position_relative_to_joint_velocity_servo",
+        }
     ):
         target_joint_positions = action[:7]
         current_joint_positions = current_low_dim_state[:7].detach().cpu()

@@ -106,6 +106,7 @@ def rollout_episode(
                 obs,
                 env_action.numpy()[0],
                 cfg,
+                reference_obs=current_obs,
             )
             if capture_frames:
                 frames.extend(step_frames)

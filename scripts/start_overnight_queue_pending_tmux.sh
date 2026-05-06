@@ -9,9 +9,13 @@ ARTIFACT_ROOT="${ELSA_ARTIFACT_ROOT:-/mnt/raid0/siwon/ELSA-Robotics-Challenge-ar
 RESULT_ROOT="$ARTIFACT_ROOT/results/overnight_queue"
 CKPT_ROOT="$ARTIFACT_ROOT/model_checkpoints/overnight_queue"
 LOG_ROOT="$ARTIFACT_ROOT/logs/overnight_queue"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/cpu_limit_env.sh"
 SESSION_NAME="${OVERNIGHT_QUEUE_SESSION:-overnight_pending_16}"
 TRAIN_ENV_IDS=(0 1 2 3 4)
 EVAL_ENV_IDS=(0 1 2 3 4)
+BATCH_SIZE="${BATCH_SIZE:-16}"
+NUM_WORKERS="${NUM_WORKERS:-$ELSA_DATALOADER_WORKERS}"
 
 mkdir -p "$RESULT_ROOT" "$CKPT_ROOT" "$LOG_ROOT"
 
@@ -79,6 +83,11 @@ run_worker() {
       echo "$run_name skip=existing_result" | tee -a "$status_log"
       continue
     fi
+    elsa_wait_for_existing_run "$run_name"
+    if compgen -G "$(result_glob_for "$task" "$run_name")" > /dev/null; then
+      echo "$run_name skip=existing_result_after_wait" | tee -a "$status_log"
+      continue
+    fi
 
     ran_any=1
     echo "=== START $run_name at $(date '+%F %T') ==="
@@ -88,6 +97,8 @@ run_worker() {
       --task "$task"
       --dataset-config-path "$REPO_ROOT/$cfg"
       --epochs "$epochs"
+      --batch-size "$BATCH_SIZE"
+      --num-workers "$NUM_WORKERS"
       --eval-episodes 20
       --device cuda:0
       --seed 0
@@ -101,12 +112,15 @@ run_worker() {
       cmd+=(--eval-env-ids "${EVAL_ENV_IDS[@]}")
     fi
 
-    CUDA_VISIBLE_DEVICES="$gpu" "${cmd[@]}" 2>&1 | tee "$LOG_ROOT/${run_name}.log"
+    export CUDA_VISIBLE_DEVICES="$gpu"
+    elsa_run_with_cpu_limit "$gpu" "${cmd[@]}" 2>&1 | tee "$LOG_ROOT/${run_name}.log"
     local status="${PIPESTATUS[0]}"
     echo "$run_name exit=$status" | tee -a "$status_log"
     echo "=== END $run_name exit=$status at $(date '+%F %T') ==="
 
-    pgrep -f CoppeliaSim | xargs -r kill -9 2>/dev/null
+    # Do not globally kill simulators here: workers now run concurrently under
+    # the fill scheduler, and broad cleanup from one worker can kill another
+    # worker's live evaluation.
     sleep 5
   done
 

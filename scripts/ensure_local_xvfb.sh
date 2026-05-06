@@ -5,6 +5,25 @@ ELSA_XVFB_CACHE="${ELSA_XVFB_CACHE:-/tmp/xvfb-local}"
 ELSA_XVFB_DISPLAY="${ELSA_XVFB_DISPLAY:-:98}"
 ELSA_XVFB_LOG="${ELSA_XVFB_LOG:-$ELSA_XVFB_CACHE/xvfb.log}"
 
+is_sourced() {
+  [ "${BASH_SOURCE[0]}" != "$0" ]
+}
+
+finish_success() {
+  if is_sourced; then
+    return 0
+  fi
+  exit 0
+}
+
+finish_error() {
+  local status="${1:-1}"
+  if is_sourced; then
+    return "$status"
+  fi
+  exit "$status"
+}
+
 display_ready() {
   local display_name="$1"
   if [ -z "$display_name" ]; then
@@ -35,7 +54,7 @@ ensure_xvfb_binary() {
 
 if display_ready "${DISPLAY:-}"; then
   export DISPLAY
-  exit 0
+  finish_success
 fi
 
 XVFB_BIN="$(ensure_xvfb_binary)"
@@ -50,7 +69,7 @@ fi
 if ! display_ready "$ELSA_XVFB_DISPLAY"; then
   echo "failed to start Xvfb on $ELSA_XVFB_DISPLAY" >&2
   [ -f "$ELSA_XVFB_LOG" ] && tail -n 50 "$ELSA_XVFB_LOG" >&2
-  exit 1
+  finish_error 1
 fi
 
 export DISPLAY="$ELSA_XVFB_DISPLAY"

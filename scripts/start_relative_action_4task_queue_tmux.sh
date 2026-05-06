@@ -6,22 +6,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ARTIFACT_ROOT="${ELSA_ARTIFACT_ROOT:-/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts}"
-RESULT_ROOT="$ARTIFACT_ROOT/results/paperfaithful_20260504"
-CKPT_ROOT="$ARTIFACT_ROOT/model_checkpoints/paperfaithful_20260504"
-LOG_ROOT="$ARTIFACT_ROOT/logs/paperfaithful_20260504"
-WAIT_SESSION="${PAPERFAITHFUL_WAIT_SESSION:-paperfaithful_wait}"
-RUN_SESSION="${PAPERFAITHFUL_RUN_SESSION:-paperfaithful_20260504}"
+RESULT_ROOT="$ARTIFACT_ROOT/results/relative_action_20260504"
+CKPT_ROOT="$ARTIFACT_ROOT/model_checkpoints/relative_action_20260504"
+LOG_ROOT="$ARTIFACT_ROOT/logs/relative_action_20260504"
+WAIT_SESSION="${RELATIVE_ACTION_WAIT_SESSION:-relative_action_wait}"
+RUN_SESSION="${RELATIVE_ACTION_RUN_SESSION:-relative_action_20260504}"
 POLL_SEC="${POLL_SEC:-300}"
-EPOCHS="${PAPERFAITHFUL_EPOCHS:-50}"
+EPOCHS="${RELATIVE_ACTION_EPOCHS:-50}"
 EVAL_EPISODES="${EVAL_EPISODES:-20}"
 SEED="${SEED:-0}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
+CONFIG="experiments/sameenv_volumedp_full_dinov3_depth_lora8_jprel_w4_direct_grid16_eeaux.yaml"
 
 mkdir -p "$RESULT_ROOT" "$CKPT_ROOT" "$LOG_ROOT"
 
 blockers_running() {
+  pgrep -f "scripts/train_same_env_bcpolicy_probe.py" >/dev/null 2>&1 && return 0
   pgrep -f "scripts/start_overnight_queue_pending_tmux.sh --worker" >/dev/null 2>&1 && return 0
   pgrep -f "scripts/wait_and_run_volumedp_paperclose.sh" >/dev/null 2>&1 && return 0
   pgrep -f "scripts/start_recommended_followup_queue_tmux.sh" >/dev/null 2>&1 && return 0
+  pgrep -f "scripts/start_paperfaithful_queue_tmux.sh" >/dev/null 2>&1 && return 0
   return 1
 }
 
@@ -34,8 +39,7 @@ result_exists() {
 run_train() {
   local gpu="$1"
   local task="$2"
-  local cfg="$3"
-  local run_name="$4"
+  local run_name="$3"
 
   if result_exists "$task" "$run_name"; then
     echo "skip existing result: $run_name"
@@ -57,8 +61,10 @@ run_train() {
   set +e
   CUDA_VISIBLE_DEVICES="$gpu" "$python_bin" "$REPO_ROOT/scripts/train_same_env_bcpolicy_probe.py" \
     --task "$task" \
-    --dataset-config-path "$REPO_ROOT/$cfg" \
+    --dataset-config-path "$REPO_ROOT/$CONFIG" \
     --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" \
+    --num-workers "$NUM_WORKERS" \
     --eval-episodes "$EVAL_EPISODES" \
     --device cuda:0 \
     --seed "$SEED" \
@@ -68,9 +74,10 @@ run_train() {
     2>&1 | tee "$LOG_ROOT/${run_name}.log"
   local status="${PIPESTATUS[0]}"
   set -e
-  echo "$run_name exit=$status" | tee -a "$LOG_ROOT/_paperfaithful_status_gpu${gpu}.log"
+  echo "$run_name exit=$status" | tee -a "$LOG_ROOT/_relative_action_status_gpu${gpu}.log"
   echo "=== END $run_name exit=$status $(date '+%F %T') ==="
-  # Workers run in parallel; broad simulator cleanup from one worker can kill another.
+  # Do not globally kill CoppeliaSim here: the four task workers run in parallel.
+  # A broad cleanup from one finished worker can terminate another worker's simulator.
   sleep 5
   return "$status"
 }
@@ -81,24 +88,16 @@ run_worker() {
 
   case "$gpu" in
     0)
-      run_train 0 slide_block_to_target \
-        experiments/slide_block_to_target_sameenv_volumedp_full_dinov3_depth_lora8_jpservo_paperfaithful_v2.yaml \
-        slide_volumedp_jpservo_paperfaithful_v2_e${EPOCHS}_s${SEED}
+      run_train 0 slide_block_to_target slide_jprel_w4_direct_grid16_eeaux_e${EPOCHS}_s${SEED}
       ;;
     1)
-      run_train 1 close_box \
-        experiments/close_box_sameenv_volumedp_full_dinov3_depth_lora8_jpservo_paperfaithful_v2.yaml \
-        close_volumedp_jpservo_paperfaithful_v2_e${EPOCHS}_s${SEED}
+      run_train 1 close_box close_jprel_w4_direct_grid16_eeaux_e${EPOCHS}_s${SEED}
       ;;
     2)
-      run_train 2 insert_onto_square_peg \
-        experiments/insert_sameenv_volumedp_full_dinov3_depth_lora8_jpservo_paperfaithful_v2.yaml \
-        insert_volumedp_jpservo_paperfaithful_v2_e${EPOCHS}_s${SEED}
+      run_train 2 insert_onto_square_peg insert_jprel_w4_direct_grid16_eeaux_e${EPOCHS}_s${SEED}
       ;;
     3)
-      run_train 3 scoop_with_spatula \
-        experiments/scoop_sameenv_volumedp_full_dinov3_depth_lora8_jpservo_paperfaithful_v2.yaml \
-        scoop_volumedp_jpservo_paperfaithful_v2_e${EPOCHS}_s${SEED}
+      run_train 3 scoop_with_spatula scoop_jprel_w4_direct_grid16_eeaux_e${EPOCHS}_s${SEED}
       ;;
     *)
       echo "unknown gpu: $gpu" >&2
@@ -133,9 +132,9 @@ run_waiter() {
   local log="$LOG_ROOT/_launcher.log"
   exec > >(tee -a "$log") 2>&1
 
-  echo "=== paperfaithful waiter start $(date '+%F %T') ==="
+  echo "=== relative action waiter start $(date '+%F %T') ==="
   while blockers_running; do
-    echo "[$(date '+%F %T')] upstream queues still running; sleeping ${POLL_SEC}s"
+    echo "[$(date '+%F %T')] upstream training/queue still running; sleeping ${POLL_SEC}s"
     sleep "$POLL_SEC"
   done
 

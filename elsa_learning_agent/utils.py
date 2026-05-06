@@ -48,6 +48,24 @@ ACTION_PIPELINE_PRESETS = {
         "joint_velocity_servo_steps": 1,
         "joint_velocity_servo_tolerance": 0.01,
     },
+    "joint_position_relative_direct": {
+        "action_representation": "joint_position_relative",
+        "execution_action_interface": "joint_position",
+        "execution_action_adapter": "joint_position_relative_to_joint_position_absolute",
+        "joint_velocity_servo_gain": 20.0,
+        "joint_velocity_servo_clip": 1.0,
+        "joint_velocity_servo_steps": 1,
+        "joint_velocity_servo_tolerance": 0.01,
+    },
+    "joint_position_relative_to_benchmark_joint_velocity_servo": {
+        "action_representation": "joint_position_relative",
+        "execution_action_interface": "joint_velocity",
+        "execution_action_adapter": "joint_position_relative_to_joint_velocity_servo",
+        "joint_velocity_servo_gain": 20.0,
+        "joint_velocity_servo_clip": 1.0,
+        "joint_velocity_servo_steps": 2,
+        "joint_velocity_servo_tolerance": 0.01,
+    },
 }
 
 
@@ -168,9 +186,19 @@ def get_execution_action_adapter(config) -> str:
     execution_interface = get_execution_action_interface(config)
     if (
         execution_interface == "joint_velocity"
+        and action_representation == "joint_position_relative"
+    ):
+        return "joint_position_relative_to_joint_velocity_servo"
+    if (
+        execution_interface == "joint_velocity"
         and action_representation.startswith("joint_position")
     ):
         return "joint_position_to_joint_velocity_servo"
+    if (
+        execution_interface == "joint_position"
+        and action_representation == "joint_position_relative"
+    ):
+        return "joint_position_relative_to_joint_position_absolute"
     return "none"
 
 
@@ -445,15 +473,38 @@ def joint_position_target_to_joint_velocity_action(
     return np.concatenate((joint_velocity, gripper_action), axis=0)
 
 
-def execute_action_with_adapter(task_env, obs, action: np.ndarray, config):
+def joint_position_relative_to_absolute_action(
+    relative_action: np.ndarray,
+    reference_obs,
+) -> np.ndarray:
+    relative_action = np.asarray(relative_action, dtype=np.float32).reshape(-1)
+    if relative_action.shape[0] < 8:
+        raise ValueError(
+            f"Expected at least 8 dims for relative joint-position action, got {relative_action.shape[0]}"
+        )
+    reference_joint_positions = np.asarray(reference_obs.joint_positions, dtype=np.float32)
+    target_joint_positions = reference_joint_positions + relative_action[:7]
+    gripper_action = np.asarray(relative_action[7:8], dtype=np.float32)
+    return np.concatenate((target_joint_positions, gripper_action), axis=0)
+
+
+def execute_action_with_adapter(task_env, obs, action: np.ndarray, config, reference_obs=None):
     action = np.asarray(action, dtype=np.float32).reshape(-1)
     execution_interface = get_execution_action_interface(config)
     execution_adapter = get_execution_action_adapter(config)
+    reference_obs = obs if reference_obs is None else reference_obs
 
     if (
         execution_interface == "joint_velocity"
-        and execution_adapter == "joint_position_to_joint_velocity_servo"
+        and execution_adapter
+        in {
+            "joint_position_to_joint_velocity_servo",
+            "joint_position_relative_to_joint_velocity_servo",
+        }
     ):
+        target_action = action
+        if execution_adapter == "joint_position_relative_to_joint_velocity_servo":
+            target_action = joint_position_relative_to_absolute_action(action, reference_obs)
         servo_steps = max(1, get_joint_velocity_servo_steps(config))
         servo_tolerance = get_joint_velocity_servo_tolerance(config)
         reward = 0.0
@@ -463,7 +514,7 @@ def execute_action_with_adapter(task_env, obs, action: np.ndarray, config):
         executed_steps = 0
         for _ in range(servo_steps):
             env_action = joint_position_target_to_joint_velocity_action(
-                action,
+                target_action,
                 next_obs,
                 config,
             )
@@ -472,13 +523,19 @@ def execute_action_with_adapter(task_env, obs, action: np.ndarray, config):
             reward = float(step_reward)
             terminated = bool(terminate)
             executed_steps += 1
-            remaining_delta = np.asarray(action[:7], dtype=np.float32) - np.asarray(
+            remaining_delta = np.asarray(target_action[:7], dtype=np.float32) - np.asarray(
                 next_obs.joint_positions,
                 dtype=np.float32,
             )
             if terminated or np.max(np.abs(remaining_delta)) < servo_tolerance:
                 break
         return next_obs, reward, terminated, executed_steps, frames
+
+    if (
+        execution_interface == "joint_position"
+        and execution_adapter == "joint_position_relative_to_joint_position_absolute"
+    ):
+        action = joint_position_relative_to_absolute_action(action, reference_obs)
 
     next_obs, step_reward, terminate = task_env.step(action)
     return (

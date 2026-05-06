@@ -9,9 +9,13 @@ ARTIFACT_ROOT="${ELSA_ARTIFACT_ROOT:-/mnt/raid0/siwon/ELSA-Robotics-Challenge-ar
 RESULT_ROOT="$ARTIFACT_ROOT/results/recommended_followups_20260504"
 CKPT_ROOT="$ARTIFACT_ROOT/model_checkpoints/recommended_followups_20260504"
 LOG_ROOT="$ARTIFACT_ROOT/logs/recommended_followups_20260504"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/cpu_limit_env.sh"
 WAIT_SESSION="${RECOMMENDED_WAIT_SESSION:-recommended_followups_wait}"
 RUN_SESSION="${RECOMMENDED_RUN_SESSION:-recommended_followups_20260504}"
 POLL_SEC="${POLL_SEC:-300}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
+NUM_WORKERS="${NUM_WORKERS:-$ELSA_DATALOADER_WORKERS}"
 
 TRAIN_ENV_IDS=(0 1 2 3 4)
 EVAL_ENV_IDS=(0 1 2 3 4)
@@ -79,6 +83,11 @@ run_train() {
     echo "skip existing result: $run_name"
     return 0
   fi
+  elsa_wait_for_existing_run "$run_name"
+  if result_exists "$task" "$run_name"; then
+    echo "skip existing result after wait: $run_name"
+    return 0
+  fi
 
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/prepare_live_eval_env.sh"
@@ -96,6 +105,8 @@ run_train() {
     --task "$task"
     --dataset-config-path "$REPO_ROOT/$cfg"
     --epochs "$epochs"
+    --batch-size "$BATCH_SIZE"
+    --num-workers "$NUM_WORKERS"
     --eval-episodes 20
     --device cuda:0
     --seed "$seed"
@@ -111,12 +122,13 @@ run_train() {
 
   echo "=== START $run_name gpu=$gpu task=$task kind=$kind e$epochs seed=$seed $(date '+%F %T') ==="
   set +e
-  CUDA_VISIBLE_DEVICES="$gpu" "${cmd[@]}" 2>&1 | tee "$LOG_ROOT/${run_name}.log"
+  export CUDA_VISIBLE_DEVICES="$gpu"
+  elsa_run_with_cpu_limit "$gpu" "${cmd[@]}" 2>&1 | tee "$LOG_ROOT/${run_name}.log"
   local status="${PIPESTATUS[0]}"
   set -e
   echo "$run_name exit=$status" | tee -a "$LOG_ROOT/_recommended_status_gpu${gpu}.log"
   echo "=== END $run_name exit=$status $(date '+%F %T') ==="
-  pgrep -f CoppeliaSim | xargs -r kill -9 2>/dev/null || true
+  # Workers run in parallel; broad simulator cleanup from one worker can kill another.
   sleep 5
   return "$status"
 }

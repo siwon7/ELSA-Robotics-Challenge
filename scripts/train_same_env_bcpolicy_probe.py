@@ -35,6 +35,34 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _positive_int_from_env(*names: str) -> int | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except ValueError:
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def apply_cpu_thread_limits() -> None:
+    num_threads = _positive_int_from_env(
+        "ELSA_TORCH_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"
+    )
+    if num_threads is None:
+        return
+
+    torch.set_num_threads(num_threads)
+    try:
+        torch.set_num_interop_threads(max(1, num_threads))
+    except RuntimeError:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
@@ -47,8 +75,8 @@ def main():
     parser.add_argument("--eval-env-ids", nargs="*", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--train-split", type=float, default=0.9)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--eval-episodes", type=int, default=5)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--run-name", default="bcpolicy_same_env_probe")
@@ -63,6 +91,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
+    apply_cpu_thread_limits()
     set_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     train_env_ids = (
@@ -85,8 +114,14 @@ def main():
     cfg.dataset.env_ids = list(train_env_ids)
     cfg.dataset.train_split = float(args.train_split)
     cfg.dataset.test_split = float(args.train_split)
-    cfg.dataset.batch_size = int(args.batch_size)
-    cfg.dataset.num_workers = int(args.num_workers)
+    if args.batch_size is not None:
+        cfg.dataset.batch_size = int(args.batch_size)
+    else:
+        cfg.dataset.batch_size = int(getattr(cfg.dataset, "batch_size", 32) or 32)
+    if args.num_workers is not None:
+        cfg.dataset.num_workers = int(args.num_workers)
+    else:
+        cfg.dataset.num_workers = int(getattr(cfg.dataset, "num_workers", 0) or 0)
 
     train_dataset = ImitationDataset(cfg, train=True, normalize=True)
     val_dataset = ImitationDataset(cfg, test=True, normalize=True)
@@ -172,6 +207,9 @@ def main():
     sr = float(np.mean(flat_rewards)) if flat_rewards else None
     std_sr = float(np.std(flat_rewards)) if flat_rewards else None
     per_env_sr_values = [value for value in per_env_sr.values() if value is not None]
+    cpu_affinity = (
+        sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
+    )
 
     result = {
         "task": args.task,
@@ -226,6 +264,14 @@ def main():
         ),
         "sr": sr,
         "std_sr": std_sr,
+        "cpu_limits": {
+            "affinity": cpu_affinity,
+            "torch_num_threads": int(torch.get_num_threads()),
+            "torch_num_interop_threads": int(torch.get_num_interop_threads()),
+            "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+            "mkl_num_threads": os.environ.get("MKL_NUM_THREADS"),
+            "openblas_num_threads": os.environ.get("OPENBLAS_NUM_THREADS"),
+        },
     }
     result_path = result_dir / "result.json"
     result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")

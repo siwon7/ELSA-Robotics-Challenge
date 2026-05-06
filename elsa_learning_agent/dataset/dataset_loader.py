@@ -92,7 +92,10 @@ class ImitationDataset(Dataset):
             for i, demo in enumerate(tqdm(demos_raw_data)):
                 self.demos_idx.append(len(self.data))
                 keypoints = None
-                if self._action_representation == "joint_position_keyframe":
+                if self._action_representation in {
+                    "joint_position_keyframe",
+                    "joint_position_keyframe_relative",
+                }:
                     keypoints = self._discover_keypoints(demo)
                 num_steps = len(demo) - 1
                 for t in range(num_steps):
@@ -127,12 +130,29 @@ class ImitationDataset(Dataset):
             f"Unsupported action_keyframe_selection: {self._action_keyframe_selection}"
         )
 
-    def _build_single_action(self, trajectory, time_step, keypoints=None):
+    def _build_single_action(
+        self,
+        trajectory,
+        time_step,
+        keypoints=None,
+        reference_time_step=None,
+    ):
         clamped_step = min(time_step, len(trajectory) - 2)
+        reference_step = (
+            clamped_step
+            if reference_time_step is None
+            else min(reference_time_step, len(trajectory) - 2)
+        )
         obs = trajectory[clamped_step]
         next_obs = trajectory[clamped_step + 1]
+        reference_obs = trajectory[reference_step]
         if self._action_representation == "joint_position_absolute":
             arm_action = np.asarray(next_obs.joint_positions, dtype=np.float32)
+        elif self._action_representation == "joint_position_relative":
+            arm_action = (
+                np.asarray(next_obs.joint_positions, dtype=np.float32)
+                - np.asarray(reference_obs.joint_positions, dtype=np.float32)
+            )
         elif self._action_representation == "joint_position_keyframe":
             target_index = self._get_keyframe_target_index(
                 trajectory,
@@ -141,6 +161,24 @@ class ImitationDataset(Dataset):
             )
             target_obs = trajectory[target_index]
             arm_action = np.asarray(target_obs.joint_positions, dtype=np.float32)
+            return np.concatenate(
+                (
+                    arm_action,
+                    np.array([target_obs.gripper_open], dtype=np.float32),
+                ),
+                axis=0,
+            )
+        elif self._action_representation == "joint_position_keyframe_relative":
+            target_index = self._get_keyframe_target_index(
+                trajectory,
+                time_step=clamped_step,
+                keypoints=keypoints,
+            )
+            target_obs = trajectory[target_index]
+            arm_action = (
+                np.asarray(target_obs.joint_positions, dtype=np.float32)
+                - np.asarray(reference_obs.joint_positions, dtype=np.float32)
+            )
             return np.concatenate(
                 (
                     arm_action,
@@ -201,6 +239,7 @@ class ImitationDataset(Dataset):
                 trajectory,
                 time_step + offset,
                 keypoints=keypoints,
+                reference_time_step=time_step,
             )
             for offset in range(self._action_chunk_len)
         ]
