@@ -47,38 +47,34 @@ camera heterogeneity, representation alignment, foundation models}
 \printAffiliationsAndNotice{}
 
 \begin{abstract}
-The FLAME federated-manipulation benchmark fails on \emph{Insert Peg}
-and \emph{Scoop} (0\% across every aggregator) for two
-\emph{orthogonal} reasons that the existing literature blends
-together. \textbf{Task-level}, contact-rich manipulation needs
-metric 3-D understanding that no monocular front-view encoder can
-recover from $\sim$100 demos. \textbf{Federated-level}, each
-client observes the same task through a different camera
-projection $(K_c, T_c)$, so a 2-D image encoder is forced to
-absorb both manipulation semantics and camera-dependent geometry
-through a single shared parameter set --- which makes any
-aggregation, FedAvg or otherwise, unstable. We propose a recipe
-that addresses each axis with a different mechanism.
-\emph{(i)} A frozen DINOv3 + Depth-Anything backbone with
-client-side LoRA, lifted into a small client-local voxel volume
-using each client's known $K_c$ and $T_c$ (a paper-close
-VolumeDP-style encoder), addresses the task axis by exposing
-metric depth.
-\emph{(ii)} The same volumetric lift, applied \emph{before} any
-parameter is communicated, addresses the federated axis by
-realigning client observations into a shared world-frame
-representation; the server therefore aggregates lightweight
-modules over a geometrically normalised feature space rather than
-over heterogeneous 2-D projection distributions.
-\emph{(iii)} A 16-mode replay-ceiling sweep is included as a
-\emph{controllability diagnostic} (not a federated component) to
-fix JP-servo $g\!=\!20$ as the action interface across all
-methods, so that subsequent comparisons isolate representation and
-aggregation effects. We then specify four aggregation variants
-(global, shared encoder / local decoder, local adapter / shared
-decoder, FedRep-style staged) and a corresponding evaluation
-protocol that reports not only mean SR but worst-client SR and
-client variance, the metrics that actually matter for federated
+We study a cross-silo federated learning (FL) setting for robotic
+manipulation in which a central server coordinates multiple
+clients, each client owns private demonstration trajectories, and
+only model updates are communicated. In FLAME~\cite{flame2025},
+standard FedAvg-style training~\cite{fedavg} with a CNN policy
+collapses on contact-rich tasks such as \emph{Insert Peg} and
+\emph{Scoop}. We argue that this failure mixes two distinct
+sources of difficulty. At the task level, contact manipulation
+requires metric 3-D structure that is weakly observed from a
+single front RGB image. At the federated level, client $c$ observes
+the same robot workspace through client-specific camera intrinsics
+$K_c$ and camera-to-robot extrinsics $T_c$, so a shared 2-D encoder
+must absorb both manipulation semantics and camera-dependent
+projection geometry. We propose a camera-aware federated policy
+framework that separates these axes. Each client keeps raw images,
+$K_c$, $T_c$, depth maps, and voxel features local; it communicates
+only lightweight trainable modules such as LoRA adapters, voxel
+fusion layers, and the action decoder. A frozen DINO-style visual
+backbone~\cite{dinov2}, a frozen Depth-Anything depth
+prior~\cite{depthanything}, and a VolumeDP-inspired
+world-frame lift~\cite{volumedp2026} convert private
+client-frame observations into an aligned representation before
+server aggregation. We further include a replay-ceiling diagnostic
+to fix the action interface before comparing representation and FL
+methods. The resulting report specifies the data distribution,
+heterogeneity model, architecture, aggregation scope, and metrics
+needed to evaluate whether camera-aware representation alignment
+improves mean and worst-client success rate under federated
 deployment.
 \end{abstract}
 
@@ -87,13 +83,121 @@ deployment.
 
 FLAME~\cite{flame2025} unifies four RLBench manipulation tasks under
 a federated protocol with $4 \!\times\! 420 \!\times\! 100$ demonstrations.
-Tab.~\ref{tab:flame} shows the canonical CNN+MLP+FedAvg recipe
+Tab.~\ref{tab:flame} shows the canonical CNN+MLP+FedAvg
+\cite{fedavg} recipe
 collapses on \emph{Insert Peg} and \emph{Scoop} regardless of which
 aggregator (FedAvg, FedAvgM, FedOpt, Krum) is used. Most prior work
 on this benchmark has tried to fix this by changing the
 \emph{aggregator}. We argue this is the wrong axis: the benchmark
 collapses because \emph{the model never received a fair geometry
 budget}, not because the aggregator was poorly chosen.
+
+Fig.~\ref{fig:framework} and Tab.~\ref{tab:setting} summarise the
+setting before we introduce any proposed component. This is a
+server-mediated FL problem, not centralized training: the server
+selects clients and aggregates model updates, while each client
+retains its own demonstrations, camera calibration, raw RGB/depth
+observations, and rollout environment. The policy input is a
+front-view observation, proprioception, and client-local camera
+metadata; the output is a chunked robot action executed through a
+fixed controller. Heterogeneity is induced by environment/task
+variation and, in the experiments targeted by this proposal, by
+client-specific camera projections.
+
+\begin{figure*}[t]
+\centering
+\resizebox{0.98\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\scriptsize,
+  box/.style={draw,rounded corners,align=center,inner sep=2pt,
+              minimum height=0.55cm},
+  client/.style={box,fill=blue!5,minimum width=4.0cm},
+  local/.style={box,fill=gray!12,minimum width=4.0cm},
+  trainable/.style={box,fill=blue!14,minimum width=4.0cm},
+  server/.style={box,fill=orange!18,thick,minimum width=4.0cm},
+  arr/.style={-{Stealth},semithick},
+  comm/.style={-{Stealth},thick,blue!65!black}
+]
+\node[client] (c1) {\textbf{Client $c$}\\private dataset
+$\mathcal{D}_c=\{(o_t^c,a_t^c)\}$};
+\node[local,below=3pt of c1] (obs) {Observation $o_t^c$: RGB image,
+proprioception, local calibration $(K_c,T_c)$};
+\node[local,below=3pt of obs] (lift) {Local-only processing:
+depth prior + world-frame voxel lift};
+\node[trainable,below=3pt of lift] (pol) {Trainable surface:
+LoRA adapters, voxel fusion, action decoder};
+\node[server,right=1.3cm of obs] (srv) {\textbf{Server}\\client
+sampling + FedAvg/FedProx/SCAFFOLD aggregation};
+\node[local,below=3pt of srv] (global) {Global / partially shared
+policy parameters $\theta$};
+\node[client,right=1.3cm of srv] (eval) {\textbf{Evaluation}\\mean
+SR, worst-client SR, variance, communication};
+\draw[arr] (c1) -- (obs);
+\draw[arr] (obs) -- (lift);
+\draw[arr] (lift) -- (pol);
+\draw[comm] (pol.east) -- node[above,align=center]{model update only\\no raw data,
+no $(K_c,T_c)$} (srv.west);
+\draw[comm] (srv.south) -- (global.north);
+\draw[comm] (global.west) -| node[pos=0.25,below]{broadcast $\theta$} (pol.east);
+\draw[arr] (srv) -- (eval);
+\end{tikzpicture}
+}
+\caption{Framework overview. Each client stores demonstrations and
+camera metadata locally. The proposed camera-aware policy uses
+client-local calibration to align observations before communication;
+the server receives only trainable model updates. This figure fixes
+the problem setting for all tables and ablations in the report.}
+\label{fig:framework}
+\end{figure*}
+
+\begin{table*}[t]
+\centering
+\small
+\caption{Problem setting and method comparison. The existing FLAME
+baseline and our proposed framework operate in the same
+server--client FL protocol, but they differ in the representation
+sent to aggregation and in how camera heterogeneity is handled.}
+\label{tab:setting}
+\begin{tabular}{p{2.5cm}p{5.1cm}p{5.1cm}}
+\toprule
+Aspect & Existing baseline & Proposed framework\\
+\midrule
+FL protocol & Server-mediated cross-silo FL; clients train locally
+and the server aggregates updates with FedAvg-class methods
+\cite{fedavg}. & Same protocol; the contribution is a different
+client representation and aggregation surface, not a different
+privacy model.\\
+Tasks & Four RLBench / FLAME tasks: \emph{Slide Block},
+\emph{Close Box}, \emph{Insert Peg}, and \emph{Scoop}. &
+Same task suite; we separate single-task same-env, single-task
+multi-env, and later multi-task evaluation.\\
+Client data & Demonstration trajectories for one or more RLBench
+tasks. Each sample contains observation $o_t^c$ and expert action
+$a_t^c$. Data are partitioned by client/environment and raw
+trajectories do not leave the client. & Same trajectories, with
+explicit use of client-local camera intrinsics $K_c$ and extrinsics
+$T_c$.\\
+Input / output & Front RGB + proprioception $\rightarrow$ robot
+action. & Front RGB + proprioception + local calibration
+$\rightarrow$ chunked action through a fixed JP-servo interface.\\
+Heterogeneity & Non-IID environment/task data and camera-dependent
+2-D observations are both absorbed by a shared CNN encoder. &
+Task/environment heterogeneity remains; camera projection
+heterogeneity is reduced by local world-frame lifting before
+aggregation.\\
+Backbone & CNN + MLP / diffusion head trained from local data. &
+Frozen DINO-style ViT~\cite{dinov2} + frozen depth prior
+\cite{depthanything}; only lightweight adapters and heads are
+trainable.\\
+Aggregated surface & Usually all trainable policy weights. &
+LoRA adapters, voxel-fusion / token modules, and optionally the
+decoder; camera parameters, depth maps, and voxels remain local.\\
+Metrics & Mean task success rate (SR). & Mean SR, worst-client SR,
+client variance, communication per round, and same-env to
+multi-env gap.\\
+\bottomrule
+\end{tabular}
+\end{table*}
 
 \paragraph{Two orthogonal sources of difficulty.}
 We decompose FLAME into two axes that the literature usually mixes:
@@ -215,6 +319,49 @@ Krum    & 0.10 & 0.86 & 0.00 & 0.00\\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\section{Problem Setting and Notation}
+\label{sec:setting}
+
+We consider a set of clients $\mathcal{C}=\{1,\ldots,C\}$ coordinated
+by one server. Client $c\in\mathcal{C}$ owns a private dataset
+$\mathcal{D}_c=\{(o_i^c,a_i^c)\}_{i=1}^{n_c}$ of demonstration
+pairs. The observation $o_i^c$ contains a front RGB image
+$I_i^c$, proprioceptive state $s_i^c$, and client-local camera
+calibration. The action label $a_i^c$ is a robot action chunk
+executed through a fixed controller. The camera calibration is
+written as $(K_c,T_c)$, where $K_c$ is the camera intrinsic matrix
+and $T_c$ is the camera-to-robot-base extrinsic transform. These
+calibration variables are observed by the client but are not sent
+to the server.
+
+The global FL objective is
+\begin{equation}
+  \min_{\theta}\; F(\theta)
+  = \sum_{c\in\mathcal{C}} p_c
+    \mathbb{E}_{(o,a)\sim\mathcal{D}_c}
+    \left[\ell(f_{\theta}(o),a)\right],
+  \label{eq:fl-objective}
+\end{equation}
+where $\theta$ denotes the server-shared policy parameters,
+$p_c=n_c/\sum_{j}n_j$ is the client weight, $f_{\theta}$ is the
+policy, and $\ell$ is the imitation-learning loss. In FedAvg
+\cite{fedavg}, the server broadcasts $\theta^r$ at round $r$,
+clients perform local optimisation on $\mathcal{D}_c$, and the
+server averages the resulting updates. FedProx~\cite{fedprox}
+adds a proximal regulariser to each client's local objective, while
+SCAFFOLD~\cite{scaffold} uses control variates to reduce client
+drift.
+
+In this proposal, heterogeneity has two components. Data
+heterogeneity means that clients may differ in task, object state,
+background, demonstration style, or controller timing. Camera
+heterogeneity means that clients may share the same task semantics
+but observe them through different $(K_c,T_c)$, so the same
+world-frame point projects to different pixels. The proposed
+method does not remove all non-IID data effects; it specifically
+targets the camera-induced component by aligning client features in
+a local world frame before aggregation.
 
 \section{Problem Analysis}
 \label{sec:problem}
@@ -702,7 +849,7 @@ where the baseline was non-zero.
 
 \begin{table}[h]
 \centering
-\small
+\footnotesize
 \caption{Same-env camera-aware probe vs.\ baseline (8-DoF state),
 50 epochs on \texttt{env0}, 20 evaluation episodes. Adding
 $(K_c, T_c)$ to the state \emph{hurts} when the camera is
@@ -710,7 +857,7 @@ constant across demonstrations, as expected.}
 \label{tab:camaware-sameenv}
 \begin{tabular}{lccc}
 \toprule
-Task & Baseline & Camera-aware (33-DoF) & $\Delta$\\
+Task & Base & Cam-aware & $\Delta$\\
 \midrule
 Slide      & 0.85 & 0.20           & $-$0.65\\
 Close Box  & 0.59 & 0.30           & $-$0.29\\
@@ -751,7 +898,7 @@ module; we sweep three representative settings
 
 \begin{table}[h]
 \centering
-\small
+\footnotesize
 \caption{Early same-env volumetric probe (coarse Idea~B
 approximation, no $(K_c, T_c)$ shift across demos). w1: default workspace volume
 $[-0.45, 0.45]\!\times\![-0.55, 0.55]\!\times\![0.70, 1.35]$,
@@ -762,7 +909,7 @@ $12^3$ grid, 48 tokens.}
 \label{tab:volumedp-sameenv}
 \begin{tabular}{lcccc}
 \toprule
-Task        & Baseline & w1 (default) & w2 (grid16) & w3 (tight)\\
+Task        & Base & w1 & w2 & w3\\
 \midrule
 Slide       & \textbf{0.85} & 0.20 & 0.65          & 0.05\\
 Close Box   & \textbf{0.59} & 0.15 & 0.05          & --\\
