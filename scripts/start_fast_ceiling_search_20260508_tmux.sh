@@ -22,8 +22,11 @@ active_blockers() {
   tmux has-session -t ralph_fill4_power_moved_20260507 2>/dev/null && return 0
   tmux has-session -t recovered_live_eval_20260508 2>/dev/null && return 0
   tmux has-session -t insert_volumedp_recovery_20260508 2>/dev/null && return 0
+  tmux has-session -t demo_retrieval_probe_wait_20260508 2>/dev/null && return 0
+  tmux has-session -t demo_retrieval_probe_20260508 2>/dev/null && return 0
   pgrep -f "scripts/train_same_env_bcpolicy_probe.py" >/dev/null 2>&1 && return 0
   pgrep -f "scripts/eval_flower_checkpoint_live.py" >/dev/null 2>&1 && return 0
+  pgrep -f "scripts/eval_demo_retrieval_policy_live.py" >/dev/null 2>&1 && return 0
   return 1
 }
 
@@ -169,4 +172,3 @@ case "${1:-}" in
     launch_waiter
     ;;
 esac
-
