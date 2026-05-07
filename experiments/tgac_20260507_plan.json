@@ -1,0 +1,79 @@
+{
+  "family": "tgac_20260507",
+  "created_at": "2026-05-07",
+  "do_not_start_while_active_queue": "ralph_fill4_power_moved_20260507",
+  "roots": {
+    "results": "/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/tgac_20260507",
+    "checkpoints": "/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/model_checkpoints/tgac_20260507",
+    "logs": "/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/logs/tgac_20260507"
+  },
+  "preflight": {
+    "script": "scripts/tgac_preflight_20260507.sh",
+    "safe_to_run_now": true,
+    "starts_training": false,
+    "starts_eval": false
+  },
+  "experiment_order": [
+    {
+      "id": "E1",
+      "name": "transition_window_diagnostic",
+      "kind": "offline_eval",
+      "starts_live_sim": false,
+      "script": "scripts/analyze_gripper_transition_metrics.py",
+      "required_inputs": [
+        "config",
+        "checkpoint",
+        "task"
+      ],
+      "example_command": "/home/cvlab-dgx/anaconda3/envs/elsa_challenge/bin/python scripts/analyze_gripper_transition_metrics.py --config experiments/sameenv_volumedp_full_dinov3_depth_lora8_jprel_w4_direct_grid16_eeaux.yaml --checkpoint <checkpoint.pth> --task close_box --env-id 0 --split test --transition-window 8 --out /mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/tgac_20260507/close_tgac0607_diagtrans/transition_metrics.json"
+    },
+    {
+      "id": "E2",
+      "name": "rollout_only_hysteresis_ab",
+      "kind": "online_eval",
+      "starts_live_sim": true,
+      "script": "scripts/eval_flower_checkpoint_live.py",
+      "required_inputs": [
+        "model_path",
+        "task",
+        "dataset_config_path"
+      ],
+      "example_command": "/home/cvlab-dgx/anaconda3/envs/elsa_challenge/bin/python scripts/eval_flower_checkpoint_live.py --model-path <checkpoint.pth> --task close_box --dataset-config-path <resolved_config.yaml> --split training --env-ids 0 --episodes 20 --device cuda:0 --gripper-eval-mode hysteresis --gripper-open-threshold 0.65 --gripper-close-threshold 0.35 --gripper-min-hold-steps 2 --output /mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/tgac_20260507/close_tgac0607_evalhy/result.json"
+    },
+    {
+      "id": "E3",
+      "name": "same_checkpoint_contract_swap",
+      "kind": "online_eval",
+      "starts_live_sim": true,
+      "script": "scripts/eval_flower_checkpoint_live.py",
+      "required_inputs": [
+        "model_path",
+        "task",
+        "dataset_config_path"
+      ],
+      "example_command": "/home/cvlab-dgx/anaconda3/envs/elsa_challenge/bin/python scripts/eval_flower_checkpoint_live.py --model-path <checkpoint.pth> --task close_box --dataset-config-path <resolved_config.yaml> --split training --env-ids 0 --episodes 20 --device cuda:0 --action-pipeline-preset joint_position_relative_to_benchmark_joint_velocity_servo --execution-action-interface joint_velocity --execution-action-adapter joint_position_relative_to_joint_velocity_servo --output /mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/tgac_20260507/close_tgac0607_evalcontract_jvservo/result.json"
+    },
+    {
+      "id": "E4",
+      "name": "transition_weighted_bce",
+      "kind": "training",
+      "starts_live_sim": true,
+      "script": "scripts/train_same_env_bcpolicy_probe.py",
+      "required_inputs": [
+        "task",
+        "dataset_config_path",
+        "run_name"
+      ],
+      "configs": [
+        "experiments/sameenv_volumedp_full_dinov3_depth_lora8_jprel_w4_direct_grid16_eeaux_gripw6xk8.yaml",
+        "experiments/sameenv_volumedp_full_dinov3_depth_lora8_jprel_w4_jvservo_grid16_eeaux_gripw6xk8.yaml"
+      ],
+      "example_command": "/home/cvlab-dgx/anaconda3/envs/elsa_challenge/bin/python scripts/train_same_env_bcpolicy_probe.py --task close_box --dataset-config-path experiments/sameenv_volumedp_full_dinov3_depth_lora8_jprel_w4_direct_grid16_eeaux_gripw6xk8.yaml --epochs 50 --batch-size 16 --num-workers 1 --eval-episodes 20 --device cuda:0 --seed 0 --run-name close_jprel_w4_direct_grid16_eeaux_tgac0607_gripw6xk8_e50_s0 --output-root /mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/tgac_20260507 --checkpoint-root /mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/model_checkpoints/tgac_20260507"
+    }
+  ],
+  "notes": [
+    "Run E1-E3 before E4 whenever possible.",
+    "Do not mix outputs with action_ablation_20260504, overnight_queue, or recommended_followups_20260504.",
+    "Treat insert failures as possibly phase/contact-geometry limited, not only gripper-event limited."
+  ]
+}

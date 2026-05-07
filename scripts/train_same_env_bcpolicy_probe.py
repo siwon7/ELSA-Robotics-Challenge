@@ -1,8 +1,11 @@
 import argparse
+import hashlib
 import json
 import math
 import os
 import random
+import socket
+import subprocess
 import time
 from pathlib import Path
 
@@ -63,6 +66,36 @@ def apply_cpu_thread_limits() -> None:
         pass
 
 
+def read_boot_id() -> str | None:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def read_git_sha(repo_root: Path) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
@@ -93,6 +126,8 @@ def main():
 
     apply_cpu_thread_limits()
     set_seed(args.seed)
+    run_start_ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    repo_root = Path(__file__).resolve().parents[1]
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     train_env_ids = (
         [int(env_id) for env_id in args.train_env_ids]
@@ -178,6 +213,7 @@ def main():
     ckpt_path = ckpt_dir / f"{env_group_label}.pth"
     resolved_config_path = result_dir / "resolved_config.yaml"
     OmegaConf.save(cfg, resolved_config_path)
+    config_sha256 = sha256_file(resolved_config_path)
 
     offline_loss = validate_one_epoch(agent, val_loader, device)
     agent.save(str(ckpt_path))
@@ -264,6 +300,31 @@ def main():
         ),
         "sr": sr,
         "std_sr": std_sr,
+        "experiment_metadata": {
+            "run_start_ts": run_start_ts,
+            "hostname": socket.gethostname(),
+            "boot_id": read_boot_id(),
+            "git_sha": read_git_sha(repo_root),
+            "config_sha256": config_sha256,
+        },
+        "gripper_transition_window": int(
+            getattr(cfg.model, "gripper_transition_window", 0) or 0
+        ),
+        "gripper_transition_weight": float(
+            getattr(cfg.model, "gripper_transition_weight", 1.0) or 1.0
+        ),
+        "gripper_eval_mode": str(
+            getattr(cfg.dataset, "gripper_eval_mode", "threshold") or "threshold"
+        ),
+        "gripper_open_threshold": float(
+            getattr(cfg.dataset, "gripper_open_threshold", 0.65) or 0.65
+        ),
+        "gripper_close_threshold": float(
+            getattr(cfg.dataset, "gripper_close_threshold", 0.35) or 0.35
+        ),
+        "gripper_min_hold_steps": int(
+            getattr(cfg.dataset, "gripper_min_hold_steps", 0) or 0
+        ),
         "cpu_limits": {
             "affinity": cpu_affinity,
             "torch_num_threads": int(torch.get_num_threads()),

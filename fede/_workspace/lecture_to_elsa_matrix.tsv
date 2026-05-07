@@ -1,0 +1,25 @@
+source	main_problem	methods_or_topics	elsa_use	implementation_priority
+lec01_intro	system-aware distributed/federated ML	cross-device/cross-silo, systems constraints	treat env/task/robot shards as clients	medium
+lec02_sgd	local optimizer behavior	SGD, mini-batch, momentum, Adam	control local objective before FL ablations	high
+lec03_sgd_convergence	gradient variance and smoothness	Lipschitz, strong convexity, stochastic variance	log update norm and pre/post loss	high
+lec04_nonconvex_variance	non-convex SGD and variance reduction	SAG, SAGA, SVRG	prepare SCAFFOLD/FedVARP reasoning	medium
+lec05_fl_intro	basic FL contract	FedAvg, participation fraction, local epochs	current Flower baseline	high
+lec06_heterogeneity	client drift	FedProx, SCAFFOLD, FedExp	FedProx baseline and FedExp next	high
+lec07_comp_heterogeneity	objective inconsistency	FedNova, generalized FedAvg	use if local steps differ	medium
+lec08_partial_selection	partial participation variance	FedVARP, biased selection	diagnose active_workers/partial clients	medium
+lec09_partial_selection	selection bias	Power-of-Choice, adaptive d	high-loss env diagnostic	medium
+lec10_fairness	worst-client and participation fairness	AFL, q-FFL, MaxFL	worst env/gripper event improvement	high
+lec11_personalization	global vs local model tension	Ditto, clustering	use only if personalized eval allowed	low
+lec12_personalization_mtl	shared trunk/local head	Per-FedAvg, MTL, MMoE	FedPer/FedRep for VolumeDP heads	low
+lec13_model_merging	task delta analysis	task arithmetic, MTL	analyze env/task deltas, not main path	low
+lec14_privacy	update leakage	gradient inversion, DP, secure aggregation	privacy story for real FLAME silos	low
+lec15_privacy_secureagg	private aggregation under dropout	one-time pad, Shamir secret sharing	secure aggregation compatibility later	low
+paper_fedprox	heterogeneity stability	proximal local objective	already partly implemented	high
+paper_scaffold	persistent client drift	control variates	stateful client strategy later	medium
+paper_fednova	heterogeneous local steps	normalized delta aggregation	only after local step telemetry	medium
+paper_fedexp	server slowdown	server LR extrapolation	first new aggregation strategy	high
+paper_power_of_choice	slow random participation	high-loss client selection	diagnostic selection only	medium
+paper_afl	unknown target mixture	minimax client mixture	worst-env small-client experiment	medium
+paper_qffl	per-client fairness	q-FedAvg dynamic weighting	worst-event aggregation	high
+paper_maxgm	model appeal/incentives	requirement-aware aggregation	threshold-based rollout/event objective	high
+paper_ditto	fairness/robustness via personalization	global-regularized local models	side experiment only	low

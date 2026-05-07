@@ -13,9 +13,11 @@ except ImportError:  # pragma: no cover - optional dependency fallback
     imageio = None
 
 from elsa_learning_agent.utils import (
+    apply_gripper_hysteresis_to_normalized_action,
     denormalize_action,
     execute_action_with_adapter,
     expand_action_bounds,
+    get_gripper_eval_mode,
     load_environment,
     move_nested_to_device,
     process_obs,
@@ -59,6 +61,13 @@ def rollout_episode(
     terminated = False
     steps = 0
     prev_policy_obs = None
+    gripper_hysteresis_state = {
+        "is_open": bool(float(getattr(obs, "gripper_open", 1.0)) > 0.5),
+        "hold_steps": 999,
+    }
+    gripper_hysteresis_applied = False
+    predicted_gripper_flips = 0
+    executed_gripper_flips = 0
     needs_obs_context = requires_observation_context(cfg) or str(
         getattr(getattr(agent, "policy", None), "vision_backbone", "") or ""
     ).startswith("volumedp_")
@@ -90,7 +99,30 @@ def rollout_episode(
         obs_context = move_nested_to_device(obs_context, device)
 
         with torch.no_grad():
-            action = agent.get_action(front_rgb, low_dim_state, obs_context=obs_context)
+            if (
+                get_gripper_eval_mode(cfg) == "hysteresis"
+                and hasattr(agent, "get_action_with_gripper_logits")
+            ):
+                action, gripper_logits = agent.get_action_with_gripper_logits(
+                    front_rgb,
+                    low_dim_state,
+                    obs_context=obs_context,
+                )
+                action, gripper_hysteresis_state, gripper_info = (
+                    apply_gripper_hysteresis_to_normalized_action(
+                        action,
+                        gripper_logits,
+                        cfg,
+                        gripper_hysteresis_state,
+                    )
+                )
+                gripper_hysteresis_applied = (
+                    gripper_hysteresis_applied or bool(gripper_info["applied"])
+                )
+                predicted_gripper_flips += int(gripper_info["predicted_flips"])
+                executed_gripper_flips += int(gripper_info["executed_flips"])
+            else:
+                action = agent.get_action(front_rgb, low_dim_state, obs_context=obs_context)
         expanded_action_min, expanded_action_max = expand_action_bounds(
             action_min,
             action_max,
@@ -113,6 +145,9 @@ def rollout_episode(
             reward = float(step_reward)
             terminated = bool(terminate)
             steps += int(executed_steps)
+            gripper_hysteresis_state["is_open"] = bool(
+                float(getattr(obs, "gripper_open", gripper_hysteresis_state["is_open"])) > 0.5
+            )
             if terminated or steps >= max_steps:
                 break
         prev_policy_obs = current_obs
@@ -124,6 +159,10 @@ def rollout_episode(
         "success": success,
         "steps": steps,
         "frames": frames,
+        "gripper_eval_mode": get_gripper_eval_mode(cfg),
+        "gripper_hysteresis_applied": gripper_hysteresis_applied,
+        "predicted_gripper_flips": int(predicted_gripper_flips),
+        "executed_gripper_flips": int(executed_gripper_flips),
     }
 
 

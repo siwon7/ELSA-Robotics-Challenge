@@ -63,3 +63,38 @@ Reference docs:
 - [FL method plan](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/docs/federated_method_plan_kr.md)
 - [Action presets](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/docs/action_pipeline_presets_kr.md)
 - [Model catalog](/home/cvlab-dgx/siwon/ELSA-Robotics-Challenge/docs/model_catalog_kr.md)
+
+## IC613 FL Smoke Configs
+
+Runnable FL presets now cover both server-only and non-server-only axes:
+
+| Config | Method | Notes |
+| --- | --- | --- |
+| `fl_dinov3_diffusion_lora4_jvdirect_fedavg.yaml` | `fedavg` | global-only baseline |
+| `fl_dinov3_diffusion_lora4_jvdirect_fedprox.yaml` | `fedprox_visual_shift` | FedProx local objective |
+| `fl_dinov3_diffusion_lora4_jvdirect_fedper_head.yaml` | `fedper_head` | shared body + client-local diffusion/gripper heads |
+| `fl_dinov3_diffusion_lora4_jvdirect_fedprox_fedper_head.yaml` | `fedprox_fedper_head` | FedProx shared body + local heads |
+| `fl_dinov3_diffusion_lora4_jvdirect_fedexp.yaml` | `fedexp` | paper-form adaptive server LR, bounded to 3.0 by default for smoke stability |
+| `fl_dinov3_diffusion_lora4_jvdirect_fednova.yaml` | `fednova` | local-step-normalized aggregation |
+| `fl_dinov3_diffusion_lora4_jvdirect_qfedavg.yaml` | `qfedavg` | q-FFL/q-FedAvg dynamic-step update; `--no-qffl-dynamic-step` switches to a safer loss-weighted ablation |
+| `fl_dinov3_diffusion_lora4_jvdirect_afl.yaml` | `afl` | agnostic FL-style client/domain weights |
+| `fl_dinov3_diffusion_lora4_jvdirect_maxfl.yaml` | `maxfl` | MaxFL-inspired threshold weighting |
+
+CPU smoke only, with unique artifact roots:
+
+```bash
+ELSA_DATASET_CONFIG_PATH_OVERRIDE=experiments/fl_dinov3_diffusion_lora4_jvdirect_qfedavg.yaml \
+METRICS_PROBE_BATCHES=2 \
+SUMMARY_ROOT=/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/results/ic613_fl_smoke_cpu \
+CHECKPOINT_ROOT=/mnt/raid0/siwon/ELSA-Robotics-Challenge-artifacts/model_checkpoints_ic613_fl_smoke_cpu \
+NUM_CLIENTS=40 \
+RAY_NUM_CPUS=8 \
+scripts/run_flower_programmatic_one_task_cpu.sh \
+  slide_block_to_target 2 1 ic613-smoke-qfedavg-r2e1-20260507-v1 0.05 0.9 0.0
+```
+
+For `fedper_head` and `fedprox_fedper_head`, personalized eval needs the server checkpoint plus:
+
+```text
+<checkpoint-root>/<task>/client_local_state/<run-tag>/partition_<id>_env_<env>.pt
+```

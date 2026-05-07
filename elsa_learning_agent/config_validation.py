@@ -16,8 +16,10 @@ from elsa_learning_agent.utils import (
 from federated_elsa_robotics.fl_method_registry import (
     get_federated_method_preset,
     get_federated_method_spec,
+    get_server_strategy_name,
     resolve_prox_mu,
 )
+from federated_elsa_robotics.parameter_surfaces import get_local_parameter_keywords
 
 
 def _module_available(module_name: str) -> bool:
@@ -88,6 +90,12 @@ def validate_runtime_config(config) -> dict:
         getattr(config.model, "gripper_head_hidden_dim", 128) or 128
     )
     gripper_loss_weight = float(getattr(config.model, "gripper_loss_weight", 1.0) or 1.0)
+    gripper_transition_weight = float(
+        getattr(config.model, "gripper_transition_weight", 1.0) or 1.0
+    )
+    gripper_transition_window = int(
+        getattr(config.model, "gripper_transition_window", 0) or 0
+    )
     spec = get_vision_backbone_spec(vision_backbone)
     if spec.dependency == "timm" and not _module_available("timm"):
         errors.append("vision_backbone requires `timm`, but it is not importable.")
@@ -127,15 +135,24 @@ def validate_runtime_config(config) -> dict:
         errors.append("model.gripper_head_hidden_dim must be positive.")
     if gripper_loss_weight < 0.0:
         errors.append("model.gripper_loss_weight must be non-negative.")
+    if gripper_transition_weight < 1.0:
+        errors.append("model.gripper_transition_weight must be >= 1.0.")
+    if gripper_transition_window < 0:
+        errors.append("model.gripper_transition_window must be non-negative.")
+    if gripper_transition_window > 0 and not separate_gripper_head:
+        warnings.append(
+            "model.gripper_transition_window is set but separate_gripper_head=false; "
+            "transition weighting will not affect the current policy."
+        )
     if diffusion_num_steps <= 1:
         errors.append("model.diffusion_num_steps must be greater than 1.")
     if diffusion_hidden_dim <= 0:
         errors.append("model.diffusion_hidden_dim must be positive.")
     if diffusion_timestep_dim <= 0:
         errors.append("model.diffusion_timestep_dim must be positive.")
-    if vision_backbone.startswith("volumedp_lite"):
+    if vision_backbone.startswith("volumedp_"):
         if policy_head_type != "diffusion":
-            errors.append("VolumeDP-lite vision_backbone requires model.policy_head_type='diffusion'.")
+            errors.append("VolumeDP vision_backbone requires model.policy_head_type='diffusion'.")
         if len(volumedp_volume_bounds) != 6:
             errors.append("model.volumedp_volume_bounds must contain 6 floats.")
         if len(volumedp_grid_shape) != 3:
@@ -199,13 +216,83 @@ def validate_runtime_config(config) -> dict:
             f"execute_steps={execute_steps} is larger than action_chunk_len={action_chunk_len}; "
             "runtime will clamp it."
         )
+    explicit_action_dim = getattr(config.dataset, "action_dim", None)
+    if explicit_action_dim not in (None, ""):
+        inferred_action_dim = int(explicit_action_dim)
+    elif len(action_min) == 8:
+        inferred_action_dim = 8 * action_chunk_len
+    else:
+        inferred_action_dim = 8 * action_chunk_len
+    if (
+        vision_backbone.startswith("volumedp_")
+        and policy_head_type == "diffusion"
+        and inferred_action_dim % volumedp_action_token_dim != 0
+    ):
+        warnings.append(
+            f"action_dim={inferred_action_dim} is not divisible by "
+            f"model.volumedp_action_token_dim={volumedp_action_token_dim}; "
+            "multi-token diffusion will fall back to a single action token."
+        )
+    gripper_eval_mode = str(
+        getattr(config.dataset, "gripper_eval_mode", "threshold") or "threshold"
+    )
+    gripper_open_threshold = float(
+        getattr(config.dataset, "gripper_open_threshold", 0.65) or 0.65
+    )
+    gripper_close_threshold = float(
+        getattr(config.dataset, "gripper_close_threshold", 0.35) or 0.35
+    )
+    gripper_min_hold_steps = int(
+        getattr(config.dataset, "gripper_min_hold_steps", 0) or 0
+    )
+    if gripper_eval_mode not in {"threshold", "hysteresis"}:
+        errors.append("dataset.gripper_eval_mode must be one of ['threshold', 'hysteresis'].")
+    if not 0.0 <= gripper_close_threshold <= 1.0:
+        errors.append("dataset.gripper_close_threshold must be in [0, 1].")
+    if not 0.0 <= gripper_open_threshold <= 1.0:
+        errors.append("dataset.gripper_open_threshold must be in [0, 1].")
+    if gripper_close_threshold > gripper_open_threshold:
+        errors.append("dataset.gripper_close_threshold must be <= gripper_open_threshold.")
+    if gripper_min_hold_steps < 0:
+        errors.append("dataset.gripper_min_hold_steps must be non-negative.")
 
     federated_method_preset = get_federated_method_preset(config)
     federated_method_spec = get_federated_method_spec(config)
+    server_strategy = get_server_strategy_name(config)
+    local_parameter_keywords = get_local_parameter_keywords(config)
     prox_mu = resolve_prox_mu(config)
     if federated_method_spec["local_regularizer"] == "none" and prox_mu > 0.0:
         warnings.append(
             f"prox_mu={prox_mu} is set while federated preset is {federated_method_preset}."
+        )
+    if federated_method_spec.get("client_state") == "local_parameters":
+        if not local_parameter_keywords:
+            errors.append(
+                f"federated preset {federated_method_preset} requires local_parameter_keywords."
+            )
+        warnings.append(
+            f"federated preset {federated_method_preset} keeps selected parameters client-local; "
+            "server checkpoints contain only the shared aggregated surface plus initialized local heads."
+        )
+    if server_strategy in {"qfedavg", "afl", "maxfl"}:
+        warnings.append(
+            f"server_strategy={server_strategy} is client-loss-aware; use metrics-probe-batches > 0 "
+            "for pre-train loss when possible, and evaluate mean plus worst-env metrics together."
+        )
+    if server_strategy == "qfedavg":
+        warnings.append(
+            "server_strategy=qfedavg uses the q-FFL dynamic-step update by default; "
+            "keep federated.qffl_learning_rate aligned with model.learning_rate."
+        )
+    if server_strategy == "fednova":
+        warnings.append(
+            "server_strategy=fednova only differs materially from FedAvg when clients have different "
+            "local_steps or effective local epochs."
+        )
+    if server_strategy == "maxfl":
+        warnings.append(
+            "server_strategy=maxfl is a MaxFL-inspired threshold-weighted first pass; "
+            "full MaxFL needs per-client requirement thresholds or participation benefit metrics."
         )
 
     if errors:
@@ -239,14 +326,24 @@ def validate_runtime_config(config) -> dict:
         "separate_gripper_head": separate_gripper_head,
         "gripper_head_hidden_dim": gripper_head_hidden_dim,
         "gripper_loss_weight": gripper_loss_weight,
+        "gripper_transition_weight": gripper_transition_weight,
+        "gripper_transition_window": gripper_transition_window,
+        "gripper_eval_mode": gripper_eval_mode,
+        "gripper_open_threshold": gripper_open_threshold,
+        "gripper_close_threshold": gripper_close_threshold,
+        "gripper_min_hold_steps": gripper_min_hold_steps,
         "supported_vision_backbones": get_supported_vision_backbones(),
         "action_pipeline_preset": action_pipeline_preset,
         "action_representation": action_representation,
         "execution_action_interface": execution_action_interface,
         "execution_action_adapter": execution_action_adapter,
         "federated_method_preset": federated_method_preset,
-        "server_strategy": federated_method_spec["server_strategy"],
+        "server_strategy": server_strategy,
+        "client_update": federated_method_spec["client_update"],
         "local_regularizer": federated_method_spec["local_regularizer"],
+        "parameter_scope": federated_method_spec["parameter_scope"],
+        "client_state": federated_method_spec["client_state"],
+        "local_parameter_keywords": local_parameter_keywords,
         "prox_mu": prox_mu,
         "warnings": warnings,
     }

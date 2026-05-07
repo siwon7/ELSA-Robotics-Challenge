@@ -20,6 +20,11 @@ dataset:
   joint_velocity_servo_clip: 1.0
   joint_velocity_servo_steps: 2
   joint_velocity_servo_tolerance: 0.01
+  # Evaluation-only gripper post-processing. Hysteresis is off by default.
+  gripper_eval_mode: threshold
+  gripper_open_threshold: 0.65
+  gripper_close_threshold: 0.35
+  gripper_min_hold_steps: 0
   
   # Eval split for client
   test_split: 0.9
@@ -78,8 +83,12 @@ model:
   proprio_visual_fusion_mode: token
   proprio_visual_fusion_hidden_dim: 256
   proprio_visual_fusion_scale: 1.0
+  # Transition-weighted BCE for split gripper heads. Defaults keep legacy behavior.
+  gripper_transition_window: 0
+  gripper_transition_weight: 1.0
 federated:
-  # legacy_auto | fedavg | fedprox | fedprox_visual_shift
+  # legacy_auto | fedavg | fedprox | fedprox_visual_shift | fedexp | fedprox_fedexp
+  # fednova | fedprox_fednova | qfedavg | afl | maxfl | fedper_head | fedprox_fedper_head
   method_preset: fedprox_visual_shift
   prox_mu: 0.001
 constants:

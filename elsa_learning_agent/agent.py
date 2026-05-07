@@ -141,7 +141,23 @@ class Agent():
         # Get the action from the policy
         return self.policy(image, low_dim_state, obs_context=obs_context) # Assuming the policy is a function
 
-    def compute_loss(self, image, low_dim_state, action, criterion=None, obs_context=None, ee_position=None):
+    def get_action_with_gripper_logits(self, image, low_dim_state, obs_context=None):
+        return self.policy.forward_with_gripper_logits(
+            image,
+            low_dim_state,
+            obs_context=obs_context,
+        )
+
+    def compute_loss(
+        self,
+        image,
+        low_dim_state,
+        action,
+        criterion=None,
+        obs_context=None,
+        ee_position=None,
+        gripper_target_weight=None,
+    ):
         return self.policy.compute_loss(
             image,
             low_dim_state,
@@ -149,6 +165,7 @@ class Agent():
             criterion=criterion,
             obs_context=obs_context,
             ee_position=ee_position,
+            gripper_target_weight=gripper_target_weight,
         )
     
     def load_state_dict(self, state_dict,device=None):
@@ -1792,6 +1809,17 @@ class BCPolicy(nn.Module):
             return None
         return self.gripper_head(context)
 
+    @staticmethod
+    def _weighted_mean_loss(loss_values, weights):
+        if weights is None:
+            return loss_values.mean()
+        weights = weights.to(device=loss_values.device, dtype=loss_values.dtype)
+        if weights.ndim == 1 and loss_values.ndim == 2:
+            weights = weights.unsqueeze(-1)
+        if tuple(weights.shape) != tuple(loss_values.shape):
+            weights = weights.reshape_as(loss_values)
+        return (loss_values * weights).sum() / weights.sum().clamp_min(1.0)
+
     def compute_loss(
         self,
         image,
@@ -1800,6 +1828,7 @@ class BCPolicy(nn.Module):
         criterion=None,
         obs_context=None,
         ee_position=None,
+        gripper_target_weight=None,
     ):
         context, spatial_tokens, voxel_weights = self._encode_context(
             image, low_dim_state, obs_context=obs_context
@@ -1832,9 +1861,14 @@ class BCPolicy(nn.Module):
         if self.separate_gripper_head and gripper_target_action is not None:
             gripper_logits = self._predict_gripper_logits(context)
             gripper_target_binary = ((gripper_target_action + 1.0) * 0.5).clamp(0.0, 1.0)
-            gripper_loss = F.binary_cross_entropy_with_logits(
+            gripper_loss_values = F.binary_cross_entropy_with_logits(
                 gripper_logits,
                 gripper_target_binary,
+                reduction="none",
+            )
+            gripper_loss = self._weighted_mean_loss(
+                gripper_loss_values,
+                gripper_target_weight,
             )
             loss = loss + self.gripper_loss_weight * gripper_loss
         if (
@@ -1854,21 +1888,29 @@ class BCPolicy(nn.Module):
             loss = loss + self.ee_aux_loss_weight * ee_loss
         return loss
 
-    def forward(self, image, low_dim_state, obs_context=None):
+    def forward_with_gripper_logits(self, image, low_dim_state, obs_context=None):
         context, spatial_tokens, _ = self._encode_context(
             image,
             low_dim_state,
             obs_context=obs_context,
         )
         if self.policy_head_type == "mlp":
-            return self._forward_mlp(context)
+            return self._forward_mlp(context), None
         arm_action = self._sample_diffusion(context, spatial_tokens=spatial_tokens)
         if not self.separate_gripper_head:
-            return arm_action
+            return arm_action, None
         gripper_logits = self._predict_gripper_logits(context)
         gripper_action = torch.where(
             torch.sigmoid(gripper_logits) >= 0.5,
             torch.ones_like(gripper_logits),
             -torch.ones_like(gripper_logits),
         )
-        return self._merge_arm_and_gripper_actions(arm_action, gripper_action)
+        return self._merge_arm_and_gripper_actions(arm_action, gripper_action), gripper_logits
+
+    def forward(self, image, low_dim_state, obs_context=None):
+        action, _gripper_logits = self.forward_with_gripper_logits(
+            image,
+            low_dim_state,
+            obs_context=obs_context,
+        )
+        return action

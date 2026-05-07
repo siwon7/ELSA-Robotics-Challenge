@@ -1,15 +1,20 @@
-from collections import OrderedDict
 from typing import Optional, Union
-from flwr.common import FitRes, parameters_to_ndarrays, Context, Parameters, Scalar, EvaluateRes
+from flwr.common import FitRes, ndarrays_to_parameters, parameters_to_ndarrays, Parameters, Scalar, EvaluateRes
 from flwr.server.client_proxy import ClientProxy
 from flwr.server import client_proxy
 from flwr.server.strategy import FedAvg
 from pathlib import Path
-import numpy as np
 from omegaconf import OmegaConf
 import torch
 import wandb
 from elsa_learning_agent.agent import Agent
+from federated_elsa_robotics.fl_method_registry import get_server_strategy_name
+from federated_elsa_robotics.server_aggregation import (
+    ClientUpdate,
+    ServerSideAggregator,
+    client_key_from_metrics,
+)
+from federated_elsa_robotics.task import get_weights, set_weights
 
 
 def normalize_run_tag(raw_tag) -> str:
@@ -48,6 +53,7 @@ class SaveModelStrategy(FedAvg):
         if agent is None:
             raise ValueError("SaveModelStrategy requires an initialized Agent instance.")
         self.agent = agent
+        self.config = config
         runtime_cfg = config.get("runtime", {}) if config is not None else {}
         run_tag = normalize_run_tag(runtime_cfg.get("run_tag", ""))
         self.wandb_project = runtime_cfg.get("wandb_project", "BCPolicy-Training")
@@ -117,15 +123,8 @@ class SaveModelStrategy(FedAvg):
         if aggregated_parameters is not None:
             print(f"Saving round {server_round} aggregated_parameters...")
 
-            # Convert `Parameters` to `list[np.ndarray]`
-            aggregated_ndarrays: list[np.ndarray] = parameters_to_ndarrays(
-                aggregated_parameters
-            )
-
-            # Convert `list[np.ndarray]` to PyTorch `state_dict`
-            params_dict = zip(self.agent.policy.state_dict().keys(), aggregated_ndarrays)
-            state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-            self.agent.policy.load_state_dict(state_dict)
+            aggregated_ndarrays = parameters_to_ndarrays(aggregated_parameters)
+            set_weights(self.agent, aggregated_ndarrays, config=self.config)
 
             # Save the model to disk
             path = Path.joinpath(self.save_path, f"{self.save_name}_round_{server_round}.pth")
@@ -186,3 +185,105 @@ class SaveModelStrategy(FedAvg):
                     })
 
         return fed_eval_loss, fed_eval_metrics
+
+
+class TrainableOnlyFederatedStrategy(SaveModelStrategy):
+    """Checkpointing strategy for trainable-only FL aggregation surfaces."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.server_strategy_name = get_server_strategy_name(self.config)
+        self.server_aggregator = ServerSideAggregator(
+            self.server_strategy_name,
+            config=self.config,
+        )
+
+    def _aggregate_fit_metrics(
+        self,
+        server_round: int,
+        results: list[tuple[ClientProxy, FitRes]],
+        strategy_metrics: dict[str, Scalar],
+    ) -> dict[str, Scalar]:
+        metrics_aggregated: dict[str, Scalar] = {}
+        if self.fit_metrics_aggregation_fn:
+            fit_metrics = [(res.num_examples, res.metrics) for _, res in results]
+            metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
+        elif server_round == 1:
+            print("WARNING: No fit_metrics_aggregation_fn provided")
+        metrics_aggregated.update(strategy_metrics)
+        return metrics_aggregated
+
+    def _save_trainable_checkpoint(
+        self,
+        server_round: int,
+        aggregated_parameters: Parameters,
+        aggregated_metrics: dict[str, Scalar],
+    ) -> None:
+        print(
+            f"Saving round {server_round} aggregated_parameters "
+            f"strategy={self.server_strategy_name}..."
+        )
+        aggregated_ndarrays = parameters_to_ndarrays(aggregated_parameters)
+        set_weights(self.agent, aggregated_ndarrays, config=self.config)
+
+        path = Path.joinpath(self.save_path, f"{self.save_name}_round_{server_round}.pth")
+        torch.save(self.agent.policy.state_dict(), path)
+
+        if self.use_wandb:
+            payload = {
+                "server_round": server_round,
+                "server_strategy": self.server_strategy_name,
+            }
+            if "train_loss" in aggregated_metrics:
+                payload["federated_training_loss"] = aggregated_metrics["train_loss"]
+            for key in (
+                "server_lr",
+                "fednova_effective_tau",
+                "qffl_q",
+                "afl_lambda_max",
+                "maxfl_weight_max",
+            ):
+                if key in aggregated_metrics:
+                    payload[key] = aggregated_metrics[key]
+            wandb.log(payload)
+
+    def aggregate_fit(
+        self,
+        server_round: int,
+        results: list[tuple[ClientProxy, FitRes]],
+        failures: list[Union[tuple[ClientProxy, FitRes], BaseException]],
+    ) -> tuple[Optional[Parameters], dict[str, Scalar]]:
+        if not results:
+            return None, {}
+        if not self.accept_failures and failures:
+            return None, {}
+
+        previous_arrays = get_weights(self.agent, config=self.config)
+        updates = [
+            ClientUpdate(
+                arrays=parameters_to_ndarrays(fit_res.parameters),
+                num_examples=int(fit_res.num_examples),
+                metrics=dict(fit_res.metrics),
+                client_key=client_key_from_metrics(
+                    dict(fit_res.metrics),
+                    fallback=f"client_{index}",
+                ),
+            )
+            for index, (_, fit_res) in enumerate(results)
+        ]
+        aggregated_ndarrays, strategy_metrics = self.server_aggregator.aggregate(
+            updates,
+            previous_arrays,
+        )
+        aggregated_parameters = ndarrays_to_parameters(aggregated_ndarrays)
+        aggregated_metrics = self._aggregate_fit_metrics(
+            server_round,
+            results,
+            strategy_metrics,
+        )
+        self._save_trainable_checkpoint(
+            server_round,
+            aggregated_parameters,
+            aggregated_metrics,
+        )
+        return aggregated_parameters, aggregated_metrics

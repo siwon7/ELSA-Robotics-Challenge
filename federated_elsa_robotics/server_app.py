@@ -1,66 +1,75 @@
 """elsa-robotics: A Flower / PyTorch app."""
 
-from flwr.common import Context, Scalar, ndarrays_to_parameters, parameters_to_ndarrays
+import json
+from flwr.common import Context, Scalar, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
-from flwr.server.client_proxy import ClientProxy
-from flwr.server.strategy import FedAvg
 from pathlib import Path
-from federated_elsa_robotics.strategies import SaveModelStrategy
+from federated_elsa_robotics.strategies import TrainableOnlyFederatedStrategy
 from federated_elsa_robotics.task import (
     get_weights,
+    get_trainable_parameter_manifest,
     infer_action_dim,
-    set_weights,
+    infer_low_dim_state_dim,
 )
 from omegaconf import OmegaConf
-import torch
-from typing import Optional, Union
 
 from elsa_learning_agent.agent import Agent
 from elsa_learning_agent.config_utils import get_agent_model_kwargs
 from elsa_learning_agent.config_validation import validate_runtime_config
+from elsa_learning_agent.utils import get_expected_image_channels
 from federated_elsa_robotics.fl_method_registry import resolve_prox_mu
 
 
-class TrainableOnlySaveModelStrategy(SaveModelStrategy):
-    """Save strategy compatible with trainable-only aggregation."""
+def train_aggregation_fn(metrics: list[tuple[int, dict[str, Scalar]]]):
+    """Aggregate training metrics."""
+    if not metrics:
+        return {}
 
-    def aggregate_fit(
-        self,
-        server_round: int,
-        results: list[tuple[ClientProxy, object]],
-        failures: list[Union[tuple[ClientProxy, object], BaseException]],
-    ) -> tuple[Optional[object], dict[str, Scalar]]:
-        aggregated_parameters, aggregated_metrics = FedAvg.aggregate_fit(
-            self,
-            server_round,
-            results,
-            failures,
+    def weighted_mean(key: str) -> float | None:
+        weighted_values = [
+            (num_samples, float(client_metrics[key]))
+            for num_samples, client_metrics in metrics
+            if key in client_metrics
+        ]
+        if not weighted_values:
+            return None
+        total_examples = sum(num_samples for num_samples, _ in weighted_values)
+        if total_examples <= 0:
+            return None
+        return (
+            sum(num_samples * value for num_samples, value in weighted_values)
+            / total_examples
         )
 
-        if aggregated_parameters is not None:
-            print(f"Saving round {server_round} aggregated_parameters...")
-            aggregated_ndarrays = parameters_to_ndarrays(aggregated_parameters)
-            set_weights(self.agent, aggregated_ndarrays)
+    aggregated: dict[str, Scalar] = {
+        "fit_clients": len(metrics),
+    }
+    train_loss = weighted_mean("train_loss")
+    if train_loss is not None:
+        aggregated["train_loss"] = train_loss
 
-            path = Path.joinpath(self.save_path, f"{self.save_name}_round_{server_round}.pth")
-            torch.save(self.agent.policy.state_dict(), path)
+    for key in (
+        "pre_train_loss",
+        "post_train_loss",
+        "delta_norm_sq",
+        "local_steps",
+        "num_batches",
+        "loaded_local_tensors",
+        "saved_local_tensors",
+    ):
+        mean_value = weighted_mean(key)
+        if mean_value is not None:
+            aggregated[f"{key}_mean"] = mean_value
 
-            if self.use_wandb:
-                import wandb
+    delta_values = [
+        float(client_metrics["delta_norm_sq"])
+        for _, client_metrics in metrics
+        if "delta_norm_sq" in client_metrics
+    ]
+    if delta_values:
+        aggregated["delta_norm_sq_max"] = max(delta_values)
 
-                wandb.log(
-                    {
-                        "server_round": server_round,
-                        "federated_training_loss": aggregated_metrics["train_loss"],
-                    }
-                )
-
-        return aggregated_parameters, aggregated_metrics
-def train_aggregation_fn(metrics: list[dict]):
-    """Aggregate training metrics."""
-    losses = [num_samples * m["train_loss"] for num_samples, m in metrics]
-    examples = [num_samples for num_samples, _ in metrics]
-    return {"train_loss": sum(losses) / sum(examples)}
+    return aggregated
 
 def server_fn(context: Context):
     # Read from project toml config
@@ -76,26 +85,55 @@ def server_fn(context: Context):
     dataset_config_path = context.run_config["dataset-config-path"]
     prox_mu_override = context.run_config.get("prox-mu", "")
     conf = OmegaConf.load(dataset_config_path)
+    if not hasattr(conf, "federated") or conf.federated is None:
+        conf.federated = {}
+    strategy_override = str(context.run_config.get("strategy-name", "") or "").strip()
+    if strategy_override and strategy_override.lower() not in {"auto", "fedavg"}:
+        conf.federated.server_strategy = strategy_override
+    for run_key, cfg_key in (
+        ("server-learning-rate", "server_learning_rate"),
+        ("fedexp-min-lr", "fedexp_min_lr"),
+        ("fedexp-max-lr", "fedexp_max_lr"),
+        ("qffl-q", "qffl_q"),
+        ("qffl-learning-rate", "qffl_learning_rate"),
+        ("qffl-max-delta-multiplier", "qffl_max_delta_multiplier"),
+        ("qffl-dynamic-step", "qffl_dynamic_step"),
+        ("afl-lambda-lr", "afl_lambda_lr"),
+        ("maxfl-loss-threshold", "maxfl_loss_threshold"),
+        ("maxfl-temperature", "maxfl_temperature"),
+    ):
+        if run_key in context.run_config:
+            conf.federated[cfg_key] = context.run_config[run_key]
     conf.model.prox_mu = resolve_prox_mu(conf, explicit_override=prox_mu_override)
     validation_summary = validate_runtime_config(conf)
     print(
         f"Starting server with l-ep={context.run_config['local-epochs']}, "
         f"ts={context.run_config['train-split']}, fclients={fraction_fit}, "
         f"prox_mu={conf.model.prox_mu}, fl={validation_summary['federated_method_preset']}"
+        f", server_strategy={validation_summary['server_strategy']}"
     )
     conf.dataset.action_dim = infer_action_dim(conf)
 
     net_args = {
-        "image_channels": 3,
-        "low_dim_state_dim": 8,
+        "image_channels": get_expected_image_channels(conf),
+        "low_dim_state_dim": infer_low_dim_state_dim(conf),
         "action_dim": int(conf.dataset.action_dim),
         "image_size": (128, 128),
         **get_agent_model_kwargs(conf),
     }
+    print(f"Server model args: {net_args}")
 
     # Initialize model parameters
     agent = Agent(**net_args)
-    ndarrays = get_weights(agent)
+    trainable_manifest = get_trainable_parameter_manifest(agent, config=conf)
+    print(
+        "Server trainable surface: "
+        f"tensors={trainable_manifest['num_trainable_tensors']} "
+        f"params={trainable_manifest['trainable_params']} "
+        f"local_only_params={trainable_manifest['local_only_params']} "
+        f"fraction={trainable_manifest['trainable_fraction']:.6f}"
+    )
+    ndarrays = get_weights(agent, config=conf)
     parameters = ndarrays_to_parameters(ndarrays)
 
     # Evaluation loader
@@ -122,7 +160,7 @@ def server_fn(context: Context):
         "prox_mu": float(conf.model.prox_mu),
     }
 
-    strategy = TrainableOnlySaveModelStrategy(
+    strategy = TrainableOnlyFederatedStrategy(
         fraction_fit=fraction_fit,
         fraction_evaluate=fraction_evaluate,
         min_available_clients=2,
@@ -132,6 +170,14 @@ def server_fn(context: Context):
         config=config,
         use_wandb=use_wandb,
         fit_aggregation_fn=train_aggregation_fn,
+    )
+    manifest_path = Path.joinpath(
+        strategy.save_path,
+        f"{strategy.save_name}.trainable_manifest.json",
+    )
+    manifest_path.write_text(
+        json.dumps(trainable_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
     )
     config = ServerConfig(num_rounds=num_rounds)
 

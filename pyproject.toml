@@ -48,6 +48,17 @@ fraction-eval = 0.0025
 server-device = "cuda:0"
 use-wandb = true
 strategy-name = "fedavg"
+metrics-probe-batches = 0
+server-learning-rate = 1.0
+fedexp-min-lr = 1.0
+fedexp-max-lr = 3.0
+qffl-q = 1.0
+qffl-learning-rate = 0.0003
+qffl-max-delta-multiplier = 2.0
+qffl-dynamic-step = true
+afl-lambda-lr = 0.1
+maxfl-loss-threshold = 0.0
+maxfl-temperature = 10.0
 
 # DatasetOptions
 dataset-config-path="dataset_config.yaml"

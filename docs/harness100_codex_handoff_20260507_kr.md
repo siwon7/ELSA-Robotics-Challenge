@@ -40,6 +40,7 @@ claude
 - 하네스 적용 시 기존 `.claude`는 자동으로 `.claude.backup.TIMESTAMP`로 백업된다.
 - 이미 다른 실험 에이전트 설정이 있으면 하네스 적용 전 `.claude` 내용을 확인한다.
 - `31-ml-experiment`는 `_workspace/`에 산출물을 만든다.
+- IC613 FL smoke는 현재 `ralph_fill4_power_moved_20260507` 큐를 건드리지 말고 CPU-only 고유 artifact root로 돌리거나, 해당 큐가 idle 된 뒤 GPU에 올린다.
 
 `31-ml-experiment`의 역할 매핑:
 
@@ -505,4 +506,3 @@ Treat the main research bottleneck as temporal gripper event grounding plus acti
 - `slide`는 이미 `0.85` signal이 있으므로, 이 결과를 baseline success로 둔다.
 - `close/insert/scoop` 중 하나를 gripper event/action contract로 끌어올리면 논문 스토리가 생긴다.
 - 이후 FL은 "same-env solved policy를 federated setting으로 확장"하는 형태로 들어가야 한다.
-

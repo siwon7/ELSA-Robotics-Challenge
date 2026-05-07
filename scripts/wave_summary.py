@@ -155,6 +155,9 @@ def build_row(task: str, run_dir: pathlib.Path, result_path: pathlib.Path) -> di
             dataset_cfg.get("joint_velocity_servo_clip"),
         ),
         "splitgripper": format_splitgripper(model_cfg.get("separate_gripper_head")),
+        "gripw": format_metric(to_float(model_cfg.get("gripper_transition_weight", 1.0))),
+        "gripwin": str(model_cfg.get("gripper_transition_window", 0)),
+        "gripmode": str(dataset_cfg.get("gripper_eval_mode", "threshold")),
         "chunk": format_chunk(
             dataset_cfg.get("action_chunk_len", 1),
             dataset_cfg.get("receding_horizon_execute_steps", 1),
@@ -192,8 +195,8 @@ def render_markdown(waves: list[str], rows_by_task: dict[str, list[dict]]) -> st
             [
                 f"## {task}",
                 "",
-                "| Run | Action | Servo (gain/clip) | Splitgripper | Chunk | SR | RMSE |",
-                "| --- | --- | --- | --- | --- | --- | --- |",
+                "| Run | Action | Servo (gain/clip) | Splitgripper | GripW | GripWin | GripMode | Chunk | SR | RMSE |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for row in rows_by_task[task]:
@@ -205,6 +208,9 @@ def render_markdown(waves: list[str], rows_by_task: dict[str, list[dict]]) -> st
                         escape_cell(row["action"]),
                         escape_cell(row["servo"]),
                         escape_cell(row["splitgripper"]),
+                        escape_cell(row["gripw"]),
+                        escape_cell(row["gripwin"]),
+                        escape_cell(row["gripmode"]),
                         escape_cell(row["chunk"]),
                         escape_cell(row["sr"]),
                         escape_cell(row["rmse"]),

@@ -39,6 +39,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ray-num-gpus", type=int, default=1)
     parser.add_argument("--ray-temp-dir", default="")
     parser.add_argument("--summary-path", default="")
+    parser.add_argument("--metrics-probe-batches", type=int, default=0)
+    parser.add_argument("--strategy-name", default="")
+    parser.add_argument("--server-learning-rate", type=float, default=1.0)
+    parser.add_argument("--fedexp-min-lr", type=float, default=1.0)
+    parser.add_argument("--fedexp-max-lr", type=float, default=3.0)
+    parser.add_argument("--qffl-q", type=float, default=1.0)
+    parser.add_argument("--qffl-learning-rate", type=float, default=0.0003)
+    parser.add_argument("--qffl-max-delta-multiplier", type=float, default=2.0)
+    parser.add_argument(
+        "--qffl-dynamic-step",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--afl-lambda-lr", type=float, default=0.1)
+    parser.add_argument("--maxfl-loss-threshold", type=float, default=0.0)
+    parser.add_argument("--maxfl-temperature", type=float, default=10.0)
     return parser.parse_args()
 
 
@@ -58,6 +74,18 @@ def make_run_config(args: argparse.Namespace) -> dict[str, bool | float | int | 
         "dataset-task": args.task,
         "train-split": args.train_split,
         "prox-mu": args.prox_mu,
+        "metrics-probe-batches": args.metrics_probe_batches,
+        "strategy-name": args.strategy_name,
+        "server-learning-rate": args.server_learning_rate,
+        "fedexp-min-lr": args.fedexp_min_lr,
+        "fedexp-max-lr": args.fedexp_max_lr,
+        "qffl-q": args.qffl_q,
+        "qffl-learning-rate": args.qffl_learning_rate,
+        "qffl-max-delta-multiplier": args.qffl_max_delta_multiplier,
+        "qffl-dynamic-step": args.qffl_dynamic_step,
+        "afl-lambda-lr": args.afl_lambda_lr,
+        "maxfl-loss-threshold": args.maxfl_loss_threshold,
+        "maxfl-temperature": args.maxfl_temperature,
     }
 
 
@@ -70,6 +98,9 @@ def main() -> int:
     os.environ["ELSA_LOCAL_EPOCHS"] = str(args.local_epochs)
     os.environ["ELSA_CLIENT_DEVICE"] = args.client_device
     os.environ["ELSA_PROX_MU"] = str(args.prox_mu)
+    os.environ["ELSA_CHECKPOINT_ROOT"] = args.checkpoint_root
+    os.environ["ELSA_RUN_TAG"] = args.run_tag
+    os.environ["ELSA_METRICS_PROBE_BATCHES"] = str(args.metrics_probe_batches)
 
     ctx = Context(
         run_id=0,
@@ -127,6 +158,8 @@ def main() -> int:
             "prox_mu": args.prox_mu,
             "checkpoint_root": args.checkpoint_root,
             "run_tag": args.run_tag,
+            "strategy_name": args.strategy_name,
+            "metrics_probe_batches": args.metrics_probe_batches,
             "history_repr": repr(history),
         }
         summary_path.write_text(json.dumps(payload, indent=2))

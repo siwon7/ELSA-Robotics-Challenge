@@ -11,6 +11,14 @@ from torch.utils.data import DataLoader
 from elsa_learning_agent.dataset.dataset_loader import ImitationDataset
 from elsa_learning_agent.agent import Agent
 from elsa_learning_agent.utils import move_nested_to_device
+from federated_elsa_robotics.parameter_surfaces import (
+    get_manifest_hash,
+    get_parameter_arrays,
+    get_parameter_surface_manifest,
+    iter_aggregated_parameters,
+    iter_trainable_policy_parameters,
+    set_parameter_arrays,
+)
 
 
 def load_data_colosseum(partition_id: int, num_partitions: int, train_split : float = 0.9, config: dict = None):
@@ -63,13 +71,73 @@ def infer_action_dim(config) -> int:
     return 8 * chunk_len
 
 
+def infer_low_dim_state_dim(config) -> int:
+    """Infer proprio/state dimensionality from config without loading data."""
+    dataset_cfg = getattr(config, "dataset", None)
+    base_dim = int(getattr(dataset_cfg, "low_dim_state_dim", 8) or 8)
+    if bool(getattr(dataset_cfg, "include_camera_in_state", False)):
+        # process_obs appends flattened front K (3x3) and T (4x4).
+        base_dim += 9 + 16
+    return base_dim
+
+
 def iter_trainable_parameters(agent: Agent) -> list[tuple[str, torch.nn.Parameter]]:
     """Return trainable policy parameters in a deterministic order."""
-    return [
-        (name, param)
-        for name, param in agent.policy.named_parameters()
-        if param.requires_grad
-    ]
+    return iter_trainable_policy_parameters(agent)
+
+
+def get_trainable_parameter_manifest(agent: Agent, config=None) -> dict:
+    """Summarize the exact parameter surface used by FL aggregation."""
+    return get_parameter_surface_manifest(agent, config)
+
+
+def get_trainable_manifest_hash(manifest: dict) -> str:
+    """Return a stable hash for the aggregated parameter surface."""
+    return get_manifest_hash(manifest)
+
+
+def estimate_train_loss(
+    agent: Agent,
+    data_loader,
+    device,
+    *,
+    max_batches: int | None = None,
+) -> float:
+    """Estimate training objective RMSE without optimizer updates."""
+    criterion = nn.MSELoss()
+    agent.eval()
+    total_loss = 0.0
+    batches = 0
+    with torch.no_grad():
+        for batch in data_loader:
+            image = batch["image"].to(device)
+            low_dim_state = batch["low_dim_state"].to(device)
+            action = batch["action"].to(device)
+            obs_context = move_nested_to_device(batch.get("obs_context"), device)
+            ee_position = batch.get("ee_position")
+            if ee_position is not None:
+                ee_position = ee_position.to(device)
+            gripper_target_weight = batch.get("gripper_target_weight")
+            if gripper_target_weight is not None:
+                gripper_target_weight = gripper_target_weight.to(device)
+
+            loss = agent.compute_loss(
+                image,
+                low_dim_state,
+                action,
+                criterion=criterion,
+                obs_context=obs_context,
+                ee_position=ee_position,
+                gripper_target_weight=gripper_target_weight,
+            )
+            total_loss += math.sqrt(loss.item())
+            batches += 1
+            if max_batches is not None and batches >= max_batches:
+                break
+
+    if batches == 0:
+        raise ValueError("Cannot estimate loss on an empty data loader")
+    return total_loss / batches
 
 
 # Training and validation loop
@@ -81,7 +149,7 @@ def train_one_epoch(
     epoch,
     device,
     prox_mu: float = 0.0,
-    global_trainable_params: Iterable[torch.Tensor] | None = None,
+    global_trainable_params: Iterable[tuple[str, torch.Tensor]] | None = None,
 ):
     agent.train()
     total_loss = 0.0
@@ -93,6 +161,9 @@ def train_one_epoch(
         ee_position = batch.get("ee_position")
         if ee_position is not None:
             ee_position = ee_position.to(device)
+        gripper_target_weight = batch.get("gripper_target_weight")
+        if gripper_target_weight is not None:
+            gripper_target_weight = gripper_target_weight.to(device)
 
         optimizer.zero_grad()
         loss = agent.compute_loss(
@@ -102,15 +173,15 @@ def train_one_epoch(
             criterion=criterion,
             obs_context=obs_context,
             ee_position=ee_position,
+            gripper_target_weight=gripper_target_weight,
         )
 
         total_objective = loss
         if prox_mu > 0.0 and global_trainable_params is not None:
             proximal_term = torch.zeros((), device=device)
-            for (_, local_param), global_param in zip(
-                iter_trainable_parameters(agent),
-                global_trainable_params,
-            ):
+            local_params = dict(iter_trainable_parameters(agent))
+            for name, global_param in global_trainable_params:
+                local_param = local_params[name]
                 proximal_term = proximal_term + torch.sum((local_param - global_param) ** 2)
             total_objective = total_objective + 0.5 * prox_mu * proximal_term
 
@@ -143,7 +214,16 @@ def validate_one_epoch(agent:Agent, val_loader, device):
     # print(f"Epoch {epoch}: Validation Loss = {avg_loss:.4f}")
     return avg_loss
 
-def train(agent: Agent, trainloader, epochs, device, config):
+def train(
+    agent: Agent,
+    trainloader,
+    epochs,
+    device,
+    config,
+    *,
+    metrics_probe_batches: int = 0,
+    return_metrics: bool = False,
+):
     """Train the model on the training set."""
     agent.policy.to(device)  # move model to GPU if available
     criterion = nn.MSELoss()  # Behavioral Cloning uses MSE loss
@@ -159,9 +239,18 @@ def train(agent: Agent, trainloader, epochs, device, config):
     global_trainable_params = None
     if prox_mu > 0.0:
         global_trainable_params = [
-            param.detach().clone()
-            for param in trainable_params
+            (name, param.detach().clone())
+            for name, param in iter_aggregated_parameters(agent, config)
         ]
+
+    metrics: dict[str, float | int] = {}
+    if return_metrics and metrics_probe_batches > 0:
+        metrics["pre_train_loss"] = estimate_train_loss(
+            agent,
+            trainloader,
+            device,
+            max_batches=metrics_probe_batches,
+        )
 
     # Training loop
     running_loss = 0.0
@@ -181,31 +270,36 @@ def train(agent: Agent, trainloader, epochs, device, config):
             print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}")
 
     avg_trainloss = running_loss / epochs
+    if return_metrics:
+        if metrics_probe_batches > 0:
+            metrics["post_train_loss"] = estimate_train_loss(
+                agent,
+                trainloader,
+                device,
+                max_batches=metrics_probe_batches,
+            )
+        metrics["local_steps"] = int(epochs * len(trainloader))
+        metrics["num_batches"] = int(len(trainloader))
+        return avg_trainloss, metrics
     return avg_trainloss
 
-def get_weights(agent: Agent):
-    return [
-        param.detach().cpu().numpy()
-        for _, param in iter_trainable_parameters(agent)
-    ]
+def get_weights(agent: Agent, config=None):
+    return get_parameter_arrays(agent, config)
 
-def set_weights(agent: Agent, parameters: list):
-    trainable_params = iter_trainable_parameters(agent)
-    if len(parameters) != len(trainable_params):
-        raise ValueError(
-            f"Expected {len(trainable_params)} trainable tensors, got {len(parameters)}"
-        )
+def get_aggregated_weights(agent: Agent, config=None):
+    return get_parameter_arrays(agent, config)
 
-    with torch.no_grad():
-        for (name, param), incoming in zip(trainable_params, parameters):
-            incoming_tensor = torch.as_tensor(
-                incoming,
-                dtype=param.dtype,
-                device=param.device,
-            )
-            if tuple(incoming_tensor.shape) != tuple(param.shape):
-                raise ValueError(
-                    f"Shape mismatch for {name}: expected {tuple(param.shape)}, "
-                    f"got {tuple(incoming_tensor.shape)}"
-                )
-            param.copy_(incoming_tensor)
+
+def set_weights(agent: Agent, parameters: list, config=None):
+    set_parameter_arrays(agent, parameters, config)
+
+
+def set_aggregated_weights(agent: Agent, parameters: list, config=None):
+    set_parameter_arrays(agent, parameters, config)
+
+
+def iter_aggregated_trainable_parameters(
+    agent: Agent,
+    config=None,
+) -> list[tuple[str, torch.nn.Parameter]]:
+    return iter_aggregated_parameters(agent, config)

@@ -22,6 +22,18 @@ RUN_TAG="${5:-abs-jpos-prog-v1}"
 FRACTION_FIT="${6:-0.05}"
 TRAIN_SPLIT="${7:-0.9}"
 PROX_MU="${8:-0.0}"
+STRATEGY_NAME="${STRATEGY_NAME:-}"
+METRICS_PROBE_BATCHES="${METRICS_PROBE_BATCHES:-0}"
+SERVER_LEARNING_RATE="${SERVER_LEARNING_RATE:-1.0}"
+FEDEXP_MIN_LR="${FEDEXP_MIN_LR:-1.0}"
+FEDEXP_MAX_LR="${FEDEXP_MAX_LR:-3.0}"
+QFFL_Q="${QFFL_Q:-1.0}"
+QFFL_LEARNING_RATE="${QFFL_LEARNING_RATE:-0.0003}"
+QFFL_MAX_DELTA_MULTIPLIER="${QFFL_MAX_DELTA_MULTIPLIER:-2.0}"
+QFFL_DYNAMIC_STEP_FLAG="${QFFL_DYNAMIC_STEP_FLAG:-}"
+AFL_LAMBDA_LR="${AFL_LAMBDA_LR:-0.1}"
+MAXFL_LOSS_THRESHOLD="${MAXFL_LOSS_THRESHOLD:-0.0}"
+MAXFL_TEMPERATURE="${MAXFL_TEMPERATURE:-10.0}"
 CLIENT_NUM_CPUS="${CLIENT_NUM_CPUS:-2.0}"
 CLIENT_NUM_GPUS="${CLIENT_NUM_GPUS:-0.1}"
 RAY_NUM_CPUS="${RAY_NUM_CPUS:-24}"
@@ -73,6 +85,18 @@ while true; do
     --ray-num-gpus 1 \
     --ray-temp-dir "${RAY_TMP_ROOT}/g${GPU_INDEX}" \
     --summary-path "$RESULTS_ROOT/${TASK_NAME}_${RUN_TAG}.json" \
+    --strategy-name "$STRATEGY_NAME" \
+    --metrics-probe-batches "$METRICS_PROBE_BATCHES" \
+    --server-learning-rate "$SERVER_LEARNING_RATE" \
+    --fedexp-min-lr "$FEDEXP_MIN_LR" \
+    --fedexp-max-lr "$FEDEXP_MAX_LR" \
+    --qffl-q "$QFFL_Q" \
+    --qffl-learning-rate "$QFFL_LEARNING_RATE" \
+    --qffl-max-delta-multiplier "$QFFL_MAX_DELTA_MULTIPLIER" \
+    $QFFL_DYNAMIC_STEP_FLAG \
+    --afl-lambda-lr "$AFL_LAMBDA_LR" \
+    --maxfl-loss-threshold "$MAXFL_LOSS_THRESHOLD" \
+    --maxfl-temperature "$MAXFL_TEMPERATURE" \
     2>&1 | tee -a "$RUN_LOG"
   RUN_RC=${PIPESTATUS[0]}
   set -e

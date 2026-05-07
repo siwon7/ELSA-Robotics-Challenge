@@ -54,6 +54,18 @@ class ImitationDataset(Dataset):
         self._action_keyframe_stopped_buffer_steps = int(
             getattr(config.dataset, "action_keyframe_stopped_buffer_steps", 4) or 4
         )
+        self._gripper_transition_window = int(
+            getattr(config.model, "gripper_transition_window", 0) or 0
+        )
+        self._gripper_transition_weight = float(
+            getattr(config.model, "gripper_transition_weight", 1.0) or 1.0
+        )
+        self._include_gripper_target_weight = (
+            bool(getattr(config.model, "separate_gripper_head", False))
+            and self._gripper_transition_window > 0
+            and self._gripper_transition_weight > 1.0
+        )
+        self._include_gripper_transition_mask = self._gripper_transition_window > 0
         self.normalize = normalize
         self.action_min = torch.tensor(config.transform.action_min)
         self.action_max = torch.tensor(config.transform.action_max)
@@ -129,6 +141,58 @@ class ImitationDataset(Dataset):
         raise ValueError(
             f"Unsupported action_keyframe_selection: {self._action_keyframe_selection}"
         )
+
+    def _get_gripper_target_index(self, trajectory, time_step, keypoints=None):
+        clamped_step = min(time_step, len(trajectory) - 2)
+        if self._action_representation in {
+            "joint_position_keyframe",
+            "joint_position_keyframe_relative",
+        }:
+            return self._get_keyframe_target_index(
+                trajectory,
+                time_step=clamped_step,
+                keypoints=keypoints,
+            )
+        return clamped_step + 1
+
+    def _is_near_gripper_transition(self, trajectory, target_index: int) -> bool:
+        window = self._gripper_transition_window
+        if window <= 0:
+            return False
+        start = max(1, int(target_index) - window)
+        end = min(len(trajectory) - 1, int(target_index) + window)
+        for idx in range(start, end + 1):
+            prev_open = getattr(trajectory[idx - 1], "gripper_open", None)
+            curr_open = getattr(trajectory[idx], "gripper_open", None)
+            if prev_open is not None and curr_open is not None and prev_open != curr_open:
+                return True
+        return False
+
+    def _build_gripper_target_weight(self, trajectory, time_step, keypoints=None):
+        if not self._include_gripper_target_weight:
+            return np.array([1.0], dtype=np.float32)
+        target_index = self._get_gripper_target_index(
+            trajectory,
+            time_step=time_step,
+            keypoints=keypoints,
+        )
+        weight = (
+            self._gripper_transition_weight
+            if self._is_near_gripper_transition(trajectory, target_index)
+            else 1.0
+        )
+        return np.array([weight], dtype=np.float32)
+
+    def _build_gripper_transition_mask(self, trajectory, time_step, keypoints=None):
+        if not self._include_gripper_transition_mask:
+            return np.array([0.0], dtype=np.float32)
+        target_index = self._get_gripper_target_index(
+            trajectory,
+            time_step=time_step,
+            keypoints=keypoints,
+        )
+        value = 1.0 if self._is_near_gripper_transition(trajectory, target_index) else 0.0
+        return np.array([value], dtype=np.float32)
 
     def _build_single_action(
         self,
@@ -243,6 +307,22 @@ class ImitationDataset(Dataset):
             )
             for offset in range(self._action_chunk_len)
         ]
+        gripper_target_weights = [
+            self._build_gripper_target_weight(
+                trajectory,
+                time_step + offset,
+                keypoints=keypoints,
+            )
+            for offset in range(self._action_chunk_len)
+        ]
+        gripper_transition_masks = [
+            self._build_gripper_transition_mask(
+                trajectory,
+                time_step + offset,
+                keypoints=keypoints,
+            )
+            for offset in range(self._action_chunk_len)
+        ]
         action = torch.tensor(np.concatenate(action_seq, axis=0), dtype=torch.float32)
         if self.normalize:
             if action.numel() % self.action_min.numel() != 0:
@@ -259,6 +339,16 @@ class ImitationDataset(Dataset):
             "low_dim_state": low_dim_state,
             "image": front_image,
         }
+        if self._include_gripper_target_weight:
+            datapoint["gripper_target_weight"] = torch.tensor(
+                np.concatenate(gripper_target_weights, axis=0),
+                dtype=torch.float32,
+            )
+        if self._include_gripper_transition_mask:
+            datapoint["gripper_transition_mask"] = torch.tensor(
+                np.concatenate(gripper_transition_masks, axis=0),
+                dtype=torch.float32,
+            )
         if obs_context is not None:
             datapoint["obs_context"] = obs_context
         if self._include_ee_position:

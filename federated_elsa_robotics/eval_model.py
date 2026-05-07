@@ -18,12 +18,14 @@ def online_evaluation(
     idx_environment: int,
     num_episodes: int = 5,
     max_steps: int = 300,
-) -> list[float]:
+    return_episodes: bool = False,
+) -> list[float] | list[dict]:
     """Run live RLBench evaluation and return per-episode rewards."""
     agent.eval()
     task_env, rlbench_env = load_task_environment(base_cfg, idx_environment, headless=True)
 
     rewards: list[float] = []
+    episodes: list[dict] = []
     try:
         for _ in range(num_episodes):
             episode = rollout_episode(
@@ -37,8 +39,11 @@ def online_evaluation(
                 base_cfg,
                 capture_frames=False,
             )
+            episodes.append(episode)
             rewards.append(float(episode["reward"]))
     finally:
         rlbench_env.shutdown()
 
+    if return_episodes:
+        return episodes
     return rewards

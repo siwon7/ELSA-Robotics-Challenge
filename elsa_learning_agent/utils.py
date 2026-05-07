@@ -160,6 +160,22 @@ def get_receding_horizon_execute_steps(config) -> int:
     return int(getattr(config.dataset, "receding_horizon_execute_steps", 1) or 1)
 
 
+def get_gripper_eval_mode(config) -> str:
+    return str(getattr(config.dataset, "gripper_eval_mode", "threshold") or "threshold")
+
+
+def get_gripper_open_threshold(config) -> float:
+    return float(getattr(config.dataset, "gripper_open_threshold", 0.65) or 0.65)
+
+
+def get_gripper_close_threshold(config) -> float:
+    return float(getattr(config.dataset, "gripper_close_threshold", 0.35) or 0.35)
+
+
+def get_gripper_min_hold_steps(config) -> int:
+    return int(getattr(config.dataset, "gripper_min_hold_steps", 0) or 0)
+
+
 def get_execution_action_interface(config) -> str:
     explicit = getattr(config.dataset, "execution_action_interface", None)
     if explicit not in (None, "", "auto"):
@@ -289,6 +305,86 @@ def select_receding_horizon_actions(action, config):
         action[..., idx * base_action_dim : (idx + 1) * base_action_dim]
         for idx in range(steps)
     ]
+
+
+def apply_gripper_hysteresis_to_normalized_action(
+    action,
+    gripper_logits,
+    config,
+    state: dict | None,
+):
+    """Apply stateful p(open) hysteresis to split-gripper normalized actions."""
+    if gripper_logits is None or get_gripper_eval_mode(config) != "hysteresis":
+        return action, state, {
+            "applied": False,
+            "predicted_flips": 0,
+            "executed_flips": 0,
+        }
+
+    base_action_dim = len(config.transform.action_min)
+    if base_action_dim <= 0 or action.shape[-1] < base_action_dim:
+        return action, state, {
+            "applied": False,
+            "predicted_flips": 0,
+            "executed_flips": 0,
+        }
+
+    if state is None:
+        state = {"is_open": True, "hold_steps": get_gripper_min_hold_steps(config)}
+
+    open_threshold = get_gripper_open_threshold(config)
+    close_threshold = get_gripper_close_threshold(config)
+    min_hold_steps = max(0, get_gripper_min_hold_steps(config))
+
+    adjusted = action.clone()
+    probs = torch.sigmoid(gripper_logits.detach()).to(action.device)
+    gripper_indices = list(range(7, min(action.shape[-1], probs.shape[-1] * base_action_dim), base_action_dim))
+    if not gripper_indices:
+        return action, state, {
+            "applied": False,
+            "predicted_flips": 0,
+            "executed_flips": 0,
+        }
+
+    current_open = bool(state.get("is_open", True))
+    hold_steps = int(state.get("hold_steps", min_hold_steps))
+    executed_steps = min(
+        max(1, get_receding_horizon_execute_steps(config)),
+        len(gripper_indices),
+    )
+    active_gripper_indices = gripper_indices[:executed_steps]
+    predicted_states = (probs[0, : len(active_gripper_indices)] >= 0.5).detach().cpu().tolist()
+    predicted_flips = sum(
+        1 for prev, curr in zip(predicted_states, predicted_states[1:]) if bool(prev) != bool(curr)
+    )
+    executed_states = []
+
+    for step_idx, action_idx in enumerate(active_gripper_indices):
+        prob_open = float(probs[0, step_idx].item())
+        next_open = current_open
+        if hold_steps >= min_hold_steps:
+            if current_open and prob_open <= close_threshold:
+                next_open = False
+            elif not current_open and prob_open >= open_threshold:
+                next_open = True
+        if next_open != current_open:
+            hold_steps = 0
+        else:
+            hold_steps += 1
+        current_open = next_open
+        executed_states.append(current_open)
+        adjusted[:, action_idx] = 1.0 if current_open else -1.0
+
+    state["is_open"] = current_open
+    state["hold_steps"] = hold_steps
+    executed_flips = sum(
+        1 for prev, curr in zip(executed_states, executed_states[1:]) if bool(prev) != bool(curr)
+    )
+    return adjusted, state, {
+        "applied": True,
+        "predicted_flips": int(predicted_flips),
+        "executed_flips": int(executed_flips),
+    }
 
 def get_image_transform(config_file):
     transform = transforms.Compose([

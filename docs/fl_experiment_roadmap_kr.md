@@ -34,6 +34,8 @@ RLBench/Colosseum 쪽 참고:
 
 ## 3. 왜 personalization을 바로 밀지 않는가
 
+2026-05-07 IC613 taxonomy 이후 기준을 보정한다. 제출용 single global model 보고에서는 personalization을 메인 주장으로 먼저 밀지 않는다. 다만 분석/스모크 실험에서는 `fedper_head`와 `fedprox_fedper_head`가 필요하다. 현재 병목이 vision backbone 평균화보다 gripper event timing과 action/controller contract 분리에 가깝기 때문에, shared trunk는 global로 묶고 diffusion/action/gripper head를 client-local로 두는 축은 반드시 별도 평가한다.
+
 현재 평가는 결국 `single global model` 성능이 중요하다.
 
 그래서 아래는 지금 바로 우선순위가 높지 않다.
