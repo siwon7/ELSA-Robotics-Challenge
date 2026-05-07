@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import os
+import sys
 import torch
 import matplotlib.pyplot as plt
 from omegaconf import OmegaConf
@@ -70,6 +71,19 @@ ACTION_PIPELINE_PRESETS = {
 
 
 def _get_rlbench_eval_classes():
+    robot_colosseum_root = os.getenv(
+        "ELSA_ROBOT_COLOSSEUM_ROOT", "/home/cvlab-dgx/siwon/robot-colosseum"
+    )
+    if os.path.isdir(robot_colosseum_root):
+        if robot_colosseum_root not in sys.path:
+            sys.path.insert(0, robot_colosseum_root)
+        loaded_colosseum = sys.modules.get("colosseum")
+        loaded_path = str(getattr(loaded_colosseum, "__file__", ""))
+        if loaded_colosseum is not None and not loaded_path.startswith(robot_colosseum_root):
+            for module_name in list(sys.modules):
+                if module_name == "colosseum" or module_name.startswith("colosseum."):
+                    del sys.modules[module_name]
+
     from colosseum import TASKS_PY_FOLDER, TASKS_TTM_FOLDER
     from colosseum.rlbench.extensions.environment import EnvironmentExt
     from colosseum.rlbench.utils import ObservationConfigExt, name_to_class

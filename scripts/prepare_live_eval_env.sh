@@ -18,4 +18,6 @@ if [ -r /lib/x86_64-linux-gnu/libffi.so.7 ]; then
 fi
 
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:${COPPELIASIM_ROOT}:${LD_LIBRARY_PATH:-}"
+export ELSA_ROBOT_COLOSSEUM_ROOT="${ELSA_ROBOT_COLOSSEUM_ROOT:-/home/cvlab-dgx/siwon/robot-colosseum}"
+export PYTHONPATH="${ELSA_ROBOT_COLOSSEUM_ROOT}:${PYTHONPATH:-}"
 unset QT_QPA_PLATFORM
