@@ -154,6 +154,15 @@ run_task_worker() {
   cd "$REPO_ROOT"
   mkdir -p "$RESULT_ROOT/$task"
   echo "=== ACTION SWEEP WORKER START slot=$slot task=$task target_sr=$TARGET_SR index_split=$INDEX_SPLIT $(date '+%F %T') ==="
+  local best_file="$RESULT_ROOT/$task/BEST_ACTION.txt"
+  if [ -s "$best_file" ] && ! grep -q "^NO_ACTION_HIT" "$best_file"; then
+    local best_sr
+    best_sr="$(awk 'NR==1 {print $2}' "$best_file")"
+    if [ "$(sr_ge "$best_sr" "$TARGET_SR")" = "1" ]; then
+      echo "skip task=$task existing best_sr=$best_sr target_sr=$TARGET_SR"
+      return 0
+    fi
+  fi
 
   local candidate cfg phase_weight top_k
   for spec in "$@"; do
