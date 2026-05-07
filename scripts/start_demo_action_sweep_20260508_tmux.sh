@@ -14,6 +14,9 @@ CONFIRM_EPISODES="${DEMO_ACTION_SWEEP_CONFIRM_EPISODES:-20}"
 CONFIRM_TRIGGER_SR="${DEMO_ACTION_SWEEP_CONFIRM_TRIGGER_SR:-0.8}"
 MAX_STEPS="${DEMO_ACTION_SWEEP_MAX_STEPS:-300}"
 INDEX_SPLIT="${DEMO_ACTION_SWEEP_INDEX_SPLIT:-train}"
+EVAL_SCRIPT="${DEMO_ACTION_SWEEP_EVAL_SCRIPT:-eval_demo_retrieval_policy_live.py}"
+RUN_PREFIX="${DEMO_ACTION_SWEEP_RUN_PREFIX:-}"
+EXTRA_EVAL_ARGS="${DEMO_ACTION_SWEEP_EXTRA_EVAL_ARGS:-}"
 ENV_NAME="${ELSA_ENV_NAME:-elsa_challenge}"
 
 mkdir -p "$RESULT_ROOT" "$LOG_ROOT"
@@ -57,7 +60,7 @@ run_eval() {
   local stage="$8"
 
   local run_name
-  run_name="$(sanitize_name "${candidate}_${stage}_e${episodes}_pw${phase_weight}_k${top_k}_${INDEX_SPLIT}")"
+  run_name="$(sanitize_name "${RUN_PREFIX}${candidate}_${stage}_e${episodes}_pw${phase_weight}_k${top_k}_${INDEX_SPLIT}")"
   local output="$RESULT_ROOT/$task/$run_name/result.json"
   if [ -s "$output" ]; then
     echo "skip existing: task=$task run=$run_name"
@@ -78,8 +81,14 @@ run_eval() {
     python_bin="$(command -v python)"
   fi
 
+  local extra_args=()
+  if [ -n "$EXTRA_EVAL_ARGS" ]; then
+    # shellcheck disable=SC2206
+    extra_args=($EXTRA_EVAL_ARGS)
+  fi
+
   local cmd=(
-    "$python_bin" "$REPO_ROOT/scripts/eval_demo_retrieval_policy_live.py"
+    "$python_bin" "$REPO_ROOT/scripts/$EVAL_SCRIPT"
     --task "$task"
     --dataset-config-path "$REPO_ROOT/$cfg"
     --rollout-split training
@@ -91,10 +100,11 @@ run_eval() {
     --state-dim 8
     --phase-weight "$phase_weight"
     --top-k "$top_k"
+    "${extra_args[@]}"
     --output "$output"
   )
 
-  echo "=== ACTION SWEEP START slot=$slot task=$task candidate=$candidate stage=$stage cfg=$cfg episodes=$episodes phase=$phase_weight top_k=$top_k $(date '+%F %T') ==="
+  echo "=== ACTION SWEEP START slot=$slot task=$task candidate=$candidate stage=$stage script=$EVAL_SCRIPT cfg=$cfg episodes=$episodes phase=$phase_weight top_k=$top_k extra='$EXTRA_EVAL_ARGS' $(date '+%F %T') ==="
   export CUDA_VISIBLE_DEVICES=""
   export ELSA_CPU_THREADS_PER_JOB="${ELSA_CPU_THREADS_PER_JOB:-1}"
   export ELSA_CPU_CORES_PER_GPU="${ELSA_CPU_CORES_PER_GPU:-4}"

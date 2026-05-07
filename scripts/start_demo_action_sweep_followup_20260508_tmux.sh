@@ -50,17 +50,23 @@ launch_pass() {
   local index_split="$2"
   local screen_episodes="$3"
   local confirm_trigger="$4"
+  local eval_script="${5:-eval_demo_retrieval_policy_live.py}"
+  local run_prefix="${6:-}"
+  local extra_eval_args="${7:-}"
 
   tmux has-session -t "$session" 2>/dev/null && {
     echo "pass already active: $session"
     return 0
   }
 
-  echo "[$(date '+%F %T')] launching pass session=$session index_split=$index_split screen=$screen_episodes confirm_trigger=$confirm_trigger"
+  echo "[$(date '+%F %T')] launching pass session=$session index_split=$index_split screen=$screen_episodes confirm_trigger=$confirm_trigger script=$eval_script prefix=$run_prefix extra='$extra_eval_args'"
   DEMO_ACTION_SWEEP_SESSION="$session" \
     DEMO_ACTION_SWEEP_INDEX_SPLIT="$index_split" \
     DEMO_ACTION_SWEEP_SCREEN_EPISODES="$screen_episodes" \
     DEMO_ACTION_SWEEP_CONFIRM_TRIGGER_SR="$confirm_trigger" \
+    DEMO_ACTION_SWEEP_EVAL_SCRIPT="$eval_script" \
+    DEMO_ACTION_SWEEP_RUN_PREFIX="$run_prefix" \
+    DEMO_ACTION_SWEEP_EXTRA_EVAL_ARGS="$extra_eval_args" \
     bash "$SCRIPT_DIR/start_demo_action_sweep_20260508_tmux.sh"
 }
 
@@ -86,6 +92,22 @@ followup() {
   wait_for_session_done demo_action_sweep_train_long_20260508
   if all_tasks_hit; then
     echo "all tasks hit target after train-long pass"
+    return 0
+  fi
+
+  launch_pass demo_action_sweep_traj_local_20260508 train 5 0.6 \
+    eval_demo_trajectory_policy_live.py traj_local_ "--alignment local_state --local-window 8"
+  wait_for_session_done demo_action_sweep_traj_local_20260508
+  if all_tasks_hit; then
+    echo "all tasks hit target after trajectory-local pass"
+    return 0
+  fi
+
+  launch_pass demo_action_sweep_traj_replay_20260508 full 5 0.6 \
+    eval_demo_trajectory_policy_live.py traj_replay_ "--alignment initial_replay"
+  wait_for_session_done demo_action_sweep_traj_replay_20260508
+  if all_tasks_hit; then
+    echo "all tasks hit target after trajectory-replay pass"
     return 0
   fi
 
