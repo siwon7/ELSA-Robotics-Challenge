@@ -258,14 +258,34 @@ launch_run_session() {
     return 0
   }
 
+  worker_cmd() {
+    local slot="$1"
+    local task="$2"
+    local log="$3"
+    printf "cd %q && env DEMO_ACTION_SWEEP_INDEX_SPLIT=%q DEMO_ACTION_SWEEP_EVAL_SCRIPT=%q DEMO_ACTION_SWEEP_RUN_PREFIX=%q DEMO_ACTION_SWEEP_EXTRA_EVAL_ARGS=%q DEMO_ACTION_SWEEP_SCREEN_EPISODES=%q DEMO_ACTION_SWEEP_CONFIRM_EPISODES=%q DEMO_ACTION_SWEEP_CONFIRM_TRIGGER_SR=%q DEMO_ACTION_SWEEP_TARGET_SR=%q bash %q --worker %q %q >> %q 2>&1" \
+      "$REPO_ROOT" \
+      "$INDEX_SPLIT" \
+      "$EVAL_SCRIPT" \
+      "$RUN_PREFIX" \
+      "$EXTRA_EVAL_ARGS" \
+      "$SCREEN_EPISODES" \
+      "$CONFIRM_EPISODES" \
+      "$CONFIRM_TRIGGER_SR" \
+      "$TARGET_SR" \
+      "$0" \
+      "$slot" \
+      "$task" \
+      "$log"
+  }
+
   tmux new-session -d -s "$SESSION_NAME" -n slide \
-    "cd '$REPO_ROOT' && bash '$0' --worker 0 slide_block_to_target >> '$LOG_ROOT/slide.log' 2>&1"
+    "$(worker_cmd 0 slide_block_to_target "$LOG_ROOT/slide.log")"
   tmux new-window -t "$SESSION_NAME" -n close \
-    "cd '$REPO_ROOT' && bash '$0' --worker 1 close_box >> '$LOG_ROOT/close.log' 2>&1"
+    "$(worker_cmd 1 close_box "$LOG_ROOT/close.log")"
   tmux new-window -t "$SESSION_NAME" -n insert \
-    "cd '$REPO_ROOT' && bash '$0' --worker 2 insert_onto_square_peg >> '$LOG_ROOT/insert.log' 2>&1"
+    "$(worker_cmd 2 insert_onto_square_peg "$LOG_ROOT/insert.log")"
   tmux new-window -t "$SESSION_NAME" -n scoop \
-    "cd '$REPO_ROOT' && bash '$0' --worker 3 scoop_with_spatula >> '$LOG_ROOT/scoop.log' 2>&1"
+    "$(worker_cmd 3 scoop_with_spatula "$LOG_ROOT/scoop.log")"
 
   echo "started session: $SESSION_NAME"
   echo "logs: $LOG_ROOT"
