@@ -1,0 +1,2 @@
+# enabled	priority	task	config	run_name	epochs	batch_size	eval_episodes	note
+1	40	slide_block_to_target	experiments/slide_block_to_target_sameenv_volumedp_full_dinov3_depth_lora8_jpabs_w2_grid16_gripw4.yaml	slide_volumedp_jpabs_w2_grid16_gripw4_mgr_e100_s0	100	16	20	slide_replay_jp_abs_3of3

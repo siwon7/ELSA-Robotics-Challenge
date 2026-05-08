@@ -1,0 +1,2 @@
+# enabled	priority	task	config	run_name	epochs	batch_size	eval_episodes	note
+1	20	scoop_with_spatula	experiments/scoop_sameenv_volumedp_full_dinov3_depth_lora8_jpabs_w2_grid16_gripw4.yaml	scoop_volumedp_jpabs_w2_grid16_gripw4_mgr_e100_s0	100	16	20	scoop_replay_jp_abs_3of3

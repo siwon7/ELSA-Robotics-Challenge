@@ -170,6 +170,10 @@ manager_loop() {
         echo "already done priority=$priority task=$task run=$run_name sr=$(sr_from_result_glob "$task" "$run_name")"
         continue
       fi
+      if run_active "$run_name"; then
+        echo "already active priority=$priority task=$task run=$run_name"
+        continue
+      fi
       echo "next priority=$priority task=$task run=$run_name note=$note"
       run_train "$task" "$cfg" "$run_name" "$epochs" "$batch_size" "$eval_episodes"
       launched_any=1
@@ -190,7 +194,15 @@ launch() {
     return 0
   }
   tmux new-session -d -s "$SESSION_NAME" -n manager \
-    "cd '$REPO_ROOT' && bash '$0' --worker"
+    "$(printf "cd %q && env ACTION_SEARCH_MANAGER_QUEUE=%q ACTION_SEARCH_MANAGER_GPU=%q ACTION_SEARCH_MANAGER_SESSION=%q ACTION_SEARCH_MANAGER_POLL_SEC=%q ACTION_SEARCH_MANAGER_IDLE_AFTER_DONE_SEC=%q ELSA_ENV_NAME=%q bash %q --worker" \
+      "$REPO_ROOT" \
+      "$QUEUE_FILE" \
+      "$MANAGER_GPU" \
+      "$SESSION_NAME" \
+      "$POLL_SEC" \
+      "$IDLE_AFTER_DONE_SEC" \
+      "$ENV_NAME" \
+      "$0")"
   echo "started manager: $SESSION_NAME"
   echo "logs: $LOG_ROOT/manager.log"
 }
